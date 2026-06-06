@@ -14,6 +14,7 @@ import {
   type MetricDataPointResponse,
   type TrendDataResponse,
 } from "../types/analysis";
+import { useTranslation } from "../i18n";
 import "./TrendChart.css";
 
 export interface TrendChartProps {
@@ -82,15 +83,13 @@ function pickRecentPoints(
 }
 
 function MinRecordingsMessage({
-  total,
   message,
+  fallback,
 }: {
-  total: number;
   message?: string | null;
+  fallback: string;
 }) {
-  const text =
-    message ??
-    `트렌드 분석을 위해서는 최소 ${MIN_RECORDINGS_FOR_TREND}회 이상의 분석 기록이 필요합니다 (현재 ${total}회).`;
+  const text = message ?? fallback;
   return (
     <p className="trend-chart__message" data-testid="trend-chart-message">
       {text}
@@ -103,20 +102,28 @@ export function TrendChart({
   metricNames,
   width = 600,
   height = 220,
-  title = "메트릭 추이",
+  title,
 }: TrendChartProps) {
+  const { language, t } = useTranslation();
   const total = trendData.total_recordings;
+  const resolvedTitle = title ?? t("trend.title");
 
   if (total < MIN_RECORDINGS_FOR_TREND) {
     return (
       <section
         className="trend-chart"
-        aria-label="메트릭 추이"
+        aria-label={t("trend.aria")}
         data-testid="trend-chart"
         data-state="insufficient"
       >
-        <h3 className="trend-chart__title">{title}</h3>
-        <MinRecordingsMessage total={total} message={trendData.message} />
+        <h3 className="trend-chart__title">{resolvedTitle}</h3>
+        <MinRecordingsMessage
+          message={language === "ko" ? trendData.message : null}
+          fallback={t("trend.insufficient", {
+            min: MIN_RECORDINGS_FOR_TREND,
+            total,
+          })}
+        />
       </section>
     );
   }
@@ -128,13 +135,13 @@ export function TrendChart({
     return (
       <section
         className="trend-chart"
-        aria-label="메트릭 추이"
+        aria-label={t("trend.aria")}
         data-testid="trend-chart"
         data-state="empty"
       >
-        <h3 className="trend-chart__title">{title}</h3>
+        <h3 className="trend-chart__title">{resolvedTitle}</h3>
         <p className="trend-chart__message" data-testid="trend-chart-empty">
-          트렌드 데이터가 없습니다.
+          {t("trend.empty")}
         </p>
       </section>
     );
@@ -143,12 +150,12 @@ export function TrendChart({
   return (
     <section
       className="trend-chart"
-      aria-label="메트릭 추이"
+      aria-label={t("trend.aria")}
       data-testid="trend-chart"
       data-state="ready"
       data-total-recordings={total}
     >
-      <h3 className="trend-chart__title">{title}</h3>
+      <h3 className="trend-chart__title">{resolvedTitle}</h3>
       {allMetricNames.map((metricName) => {
         const rawPoints = trendData.metrics_history[metricName] ?? [];
         const points = pickRecentPoints(rawPoints);
@@ -170,7 +177,7 @@ export function TrendChart({
               className="trend-chart__svg"
               viewBox={`0 0 ${geom.width} ${geom.height}`}
               role="img"
-              aria-label={`${metricName} 추이 차트`}
+              aria-label={t("trend.chartAria", { metric: metricName })}
               preserveAspectRatio="none"
             >
               <line

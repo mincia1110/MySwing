@@ -20,6 +20,7 @@ import {
   uploadToS3,
   type UploadProgressEvent,
 } from "../api/client";
+import { useTranslation } from "../i18n";
 import type {
   PresignedUrlResponse,
   QualityCheckResponse,
@@ -82,18 +83,18 @@ const INITIAL_STATE: UploadState = {
   fileKey: null,
 };
 
-function stageLabel(stage: UploadStage): string {
+function stageLabel(stage: UploadStage, t: (key: string) => string): string {
   switch (stage) {
     case "preparing":
-      return "업로드 URL 요청 중...";
+      return t("uploader.preparing");
     case "uploading":
-      return "업로드 중...";
+      return t("uploader.uploading");
     case "fetching-metadata":
-      return "메타데이터 분석 중...";
+      return t("uploader.fetchingMetadata");
     case "complete":
-      return "업로드 완료";
+      return t("uploader.complete");
     case "error":
-      return "업로드 실패";
+      return t("uploader.error");
     default:
       return "";
   }
@@ -106,6 +107,7 @@ export function VideoUploader({
   maxFileSizeBytes = DEFAULT_MAX_SIZE,
   acceptedMimeTypes = DEFAULT_MIME_TYPES,
 }: VideoUploaderProps) {
+  const { t } = useTranslation();
   const [state, setState] = useState<UploadState>(INITIAL_STATE);
   const [isDragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -118,15 +120,15 @@ export function VideoUploader({
       const extOk = ALLOWED_EXTENSIONS.includes(ext);
 
       if (!mimeOk && !extOk) {
-        return `지원하지 않는 형식입니다: ${file.type || ext}. MP4, MOV, AVI만 지원합니다.`;
+        return t("uploader.unsupportedType", { type: file.type || ext });
       }
       if (file.size > maxFileSizeBytes) {
         const limitMb = Math.round(maxFileSizeBytes / (1024 * 1024));
-        return `파일 크기가 너무 큽니다. 최대 ${limitMb}MB`;
+        return t("uploader.fileTooLarge", { limitMb });
       }
       return null;
     },
-    [acceptedMimeTypes, maxFileSizeBytes],
+    [acceptedMimeTypes, maxFileSizeBytes, t],
   );
 
   const startUpload = useCallback(
@@ -299,7 +301,7 @@ export function VideoUploader({
         role="button"
         tabIndex={0}
         aria-disabled={isUploading}
-        aria-label="비디오 파일을 드롭하거나 클릭하여 선택"
+        aria-label={t("uploader.dropzoneLabel")}
         data-testid="video-uploader-dropzone"
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -309,16 +311,16 @@ export function VideoUploader({
         }}
       >
         <p className="video-uploader__hint">
-          비디오 파일을 끌어다 놓거나 클릭하여 선택하세요
+          {t("uploader.hint")}
         </p>
-        <p className="video-uploader__formats">MP4, MOV, AVI · 최대 500MB</p>
+        <p className="video-uploader__formats">{t("uploader.formats")}</p>
         <input
           ref={inputRef}
           type="file"
           accept=".mp4,.mov,.avi,video/mp4,video/quicktime,video/x-msvideo"
           onChange={handleFileInput}
           data-testid="video-uploader-input"
-          aria-label="비디오 파일 선택"
+          aria-label={t("uploader.inputLabel")}
           style={{ display: "none" }}
         />
       </div>
@@ -327,7 +329,7 @@ export function VideoUploader({
         <div className="video-uploader__status">
           <UploadProgress
             percent={state.percent}
-            label={`${state.fileName} - ${stageLabel(state.stage)}`}
+            label={`${state.fileName} - ${stageLabel(state.stage, t)}`}
             error={state.errorMessage}
           />
         </div>
@@ -352,7 +354,7 @@ export function VideoUploader({
           onClick={reset}
           data-testid="video-uploader-reset"
         >
-          {state.stage === "error" ? "다시 시도" : "다른 파일 업로드"}
+          {state.stage === "error" ? t("uploader.retry") : t("uploader.uploadAnother")}
         </button>
       ) : null}
     </div>

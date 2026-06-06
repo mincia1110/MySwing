@@ -3,6 +3,7 @@
  * a successful upload (Requirement 1.7).
  */
 import type { VideoMetadataWithThumbnailResponse } from "../types/video";
+import { useTranslation } from "../i18n";
 import "./VideoMetadataDisplay.css";
 
 export interface VideoMetadataDisplayProps {
@@ -35,26 +36,27 @@ export function formatDuration(seconds: number): string {
 }
 
 export function VideoMetadataDisplay({ metadata }: VideoMetadataDisplayProps) {
+  const { t } = useTranslation();
   const { file_name, duration_seconds, resolution, file_size_bytes, thumbnail_url } =
     metadata;
 
   return (
     <section
       className="video-metadata"
-      aria-label="비디오 정보"
+      aria-label={t("metadata.aria")}
       data-testid="video-metadata"
     >
       <div className="video-metadata__thumbnail">
         {thumbnail_url ? (
           <img
             src={thumbnail_url}
-            alt={`${file_name} 썸네일`}
+            alt={t("metadata.thumbnailAlt", { fileName: file_name })}
             data-testid="video-metadata-thumbnail"
           />
         ) : (
           <div
             className="video-metadata__placeholder"
-            aria-label="썸네일 사용 불가"
+            aria-label={t("metadata.noThumbnail")}
             data-testid="video-metadata-thumbnail-placeholder"
           >
             🎬
@@ -62,20 +64,20 @@ export function VideoMetadataDisplay({ metadata }: VideoMetadataDisplayProps) {
         )}
       </div>
       <dl className="video-metadata__details">
-        <dt>파일명</dt>
+        <dt>{t("metadata.fileName")}</dt>
         <dd data-testid="video-metadata-filename">{file_name}</dd>
 
-        <dt>길이</dt>
+        <dt>{t("metadata.duration")}</dt>
         <dd data-testid="video-metadata-duration">
           {formatDuration(duration_seconds)}
         </dd>
 
-        <dt>해상도</dt>
+        <dt>{t("metadata.resolution")}</dt>
         <dd data-testid="video-metadata-resolution">
           {resolution.width} × {resolution.height}
         </dd>
 
-        <dt>크기</dt>
+        <dt>{t("metadata.size")}</dt>
         <dd data-testid="video-metadata-filesize">
           {formatFileSize(file_size_bytes)}
         </dd>

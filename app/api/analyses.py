@@ -12,7 +12,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,10 @@ from app.schemas.analysis import (
     TrendDataResponse,
 )
 from app.services.s3_client import get_s3_client
+from app.services.localization import (
+    localize_drill_recommendations,
+    normalize_locale,
+)
 from app.services.trend_service import build_user_trends
 from app.tasks.pipeline import analyze_swing_task
 
@@ -179,6 +183,7 @@ async def get_analysis_status(
 )
 async def get_analysis_report(
     analysis_id: UUID,
+    locale: str = Query(default="ko", description="Response language: ko or en"),
     db: AsyncSession = Depends(get_async_db),
 ) -> AnalysisReportResponse:
     """Retrieve the complete analysis report.
@@ -289,6 +294,10 @@ async def get_analysis_report(
             drill_recommendations.append(DrillRecommendationResponse(**drill_item))
         except Exception:
             logger.warning("Skipping invalid drill item: %s", drill_item)
+    drill_recommendations = localize_drill_recommendations(
+        drill_recommendations,
+        normalize_locale(locale),
+    )
 
     # Build swing phases (validate through Pydantic model)
     swing_phases: list[SwingPhaseResponse] = []

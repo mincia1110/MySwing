@@ -12,21 +12,15 @@
 import type {
   ColorCode,
   MetricEvaluationResponse,
-  MetricRating,
 } from "../types/analysis";
+import { useTranslation } from "../i18n";
 import "./MetricsTable.css";
 
 export interface MetricsTableProps {
   metrics: MetricEvaluationResponse[];
-  /** Optional title; defaults to "메트릭". */
+  /** Optional title; defaults to the localized "Metrics" label. */
   title?: string;
 }
-
-const RATING_LABEL: Record<MetricRating, string> = {
-  below_range: "기준 미만",
-  within_range: "적정",
-  above_range: "기준 초과",
-};
 
 function formatNumber(value: number, fractionDigits = 1): string {
   if (!Number.isFinite(value)) return "-";
@@ -47,18 +41,21 @@ function ratingClass(color: ColorCode): string {
 
 export function MetricsTable({
   metrics,
-  title = "메트릭",
+  title,
 }: MetricsTableProps) {
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t("metrics.title");
+
   if (metrics.length === 0) {
     return (
       <section
         className="metrics-table"
-        aria-label="메트릭 테이블"
+        aria-label={t("metrics.aria")}
         data-testid="metrics-table"
       >
-        <h3 className="metrics-table__title">{title}</h3>
+        <h3 className="metrics-table__title">{resolvedTitle}</h3>
         <p className="metrics-table__empty" data-testid="metrics-table-empty">
-          표시할 메트릭이 없습니다.
+          {t("metrics.empty")}
         </p>
       </section>
     );
@@ -67,18 +64,18 @@ export function MetricsTable({
   return (
     <section
       className="metrics-table"
-      aria-label="메트릭 테이블"
+      aria-label={t("metrics.aria")}
       data-testid="metrics-table"
     >
-      <h3 className="metrics-table__title">{title}</h3>
+      <h3 className="metrics-table__title">{resolvedTitle}</h3>
       <table className="metrics-table__table">
         <thead>
           <tr>
-            <th scope="col">메트릭</th>
-            <th scope="col">측정값</th>
-            <th scope="col">참조 범위</th>
-            <th scope="col">편차</th>
-            <th scope="col">평가</th>
+            <th scope="col">{t("metrics.metric")}</th>
+            <th scope="col">{t("metrics.measured")}</th>
+            <th scope="col">{t("metrics.referenceRange")}</th>
+            <th scope="col">{t("metrics.deviation")}</th>
+            <th scope="col">{t("metrics.rating")}</th>
           </tr>
         </thead>
         <tbody>
@@ -105,7 +102,7 @@ export function MetricsTable({
                   className={ratingClass(m.color_code)}
                   data-testid={`metrics-table-rating-${m.metric_name}`}
                 >
-                  {RATING_LABEL[m.rating]}
+                  {t(`metrics.ratings.${m.rating}`)}
                 </span>
               </td>
             </tr>

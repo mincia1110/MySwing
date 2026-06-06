@@ -11,6 +11,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { getAnalysisStatus } from "../api/analysis";
+import { useTranslation } from "../i18n";
 import {
   ANALYSIS_STATUS_SEQUENCE,
   isTerminalStatus,
@@ -35,16 +36,6 @@ export interface AnalysisStatusPollingProps {
   fetchStatus?: (analysisId: string) => Promise<AnalysisStatusResponse>;
 }
 
-const PHASE_LABELS: Record<AnalysisStatus, string> = {
-  pending: "대기 중",
-  preprocessing: "비디오 전처리 중",
-  analyzing: "스윙 분석 중",
-  evaluating: "메트릭 평가 중",
-  generating_report: "리포트 생성 중",
-  completed: "분석 완료",
-  failed: "분석 실패",
-};
-
 function progressPercent(status: AnalysisStatus): number {
   if (status === "failed") return 0;
   const idx = ANALYSIS_STATUS_SEQUENCE.indexOf(status);
@@ -61,6 +52,7 @@ export function AnalysisStatusPolling({
   onFailed,
   fetchStatus = getAnalysisStatus,
 }: AnalysisStatusPollingProps) {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<AnalysisStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -135,18 +127,20 @@ export function AnalysisStatusPolling({
       : currentStatus === "completed"
         ? "completed"
         : "running";
+  const phaseLabel = t(`status.phases.${currentStatus}`);
 
   return (
     <section
       className={`analysis-status analysis-status--${variant}`}
-      aria-label="분석 진행 상태"
+      aria-label={t("status.aria")}
       data-testid="analysis-status"
       data-status={currentStatus}
       data-terminal={isTerminal ? "true" : "false"}
     >
-      <h3 className="analysis-status__title">분석 진행 상태</h3>
+      <h3 className="analysis-status__title">{t("status.title")}</h3>
       <p className="analysis-status__phase" data-testid="analysis-status-phase">
-        현재 단계: <strong>{PHASE_LABELS[currentStatus]}</strong>
+        {t("status.currentPhase", { phase: phaseLabel }).replace(phaseLabel, "")}
+        <strong>{phaseLabel}</strong>
       </p>
       <div
         className="analysis-status__bar"
@@ -154,7 +148,7 @@ export function AnalysisStatusPolling({
         aria-valuenow={percent}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label="분석 진행률"
+        aria-label={t("status.progress")}
       >
         <div
           className="analysis-status__fill"

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { createAnalysis } from "../api/analysis";
 import { UserProfileForm } from "../components/UserProfileForm";
 import { VideoUploader } from "../components/VideoUploader";
+import { useTranslation } from "../i18n";
 import type { VideoMetadataWithThumbnailResponse } from "../types/video";
 
 type Step = "upload" | "profile" | "starting";
@@ -12,6 +13,7 @@ const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 export function UploadPage() {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [step, setStep] = useState<Step>("upload");
   const [fileKey, setFileKey] = useState<string | null>(null);
   const [, setMetadata] = useState<VideoMetadataWithThumbnailResponse | null>(null);
@@ -38,11 +40,11 @@ export function UploadPage() {
       navigate(`/analyses/${result.analysis_id}?userId=${DEFAULT_USER_ID}`);
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "분석 시작에 실패했습니다.";
+        err instanceof Error ? err.message : t("uploadPage.startError");
       setError(message);
       setIsStarting(false);
     }
-  }, [fileKey, navigate]);
+  }, [fileKey, navigate, t]);
 
   const handleSkipProfile = useCallback(() => {
     void handleStartAnalysis();
@@ -54,14 +56,11 @@ export function UploadPage() {
 
   return (
     <main style={{ maxWidth: 800, margin: "0 auto", padding: "2rem 1rem" }}>
-      <h1>MySwing — AI 야구 스윙 분석</h1>
+      <h1>{t("uploadPage.title")}</h1>
 
       {step === "upload" && (
         <>
-          <p>
-            분석할 야구 스윙 비디오를 업로드하세요. 업로드가 완료되면 프로필을
-            입력하고 분석을 시작할 수 있습니다.
-          </p>
+          <p>{t("uploadPage.intro")}</p>
           <VideoUploader
             onUploadComplete={handleUploadComplete}
             onUploadError={(err) => console.error("upload failed", err)}
@@ -71,11 +70,8 @@ export function UploadPage() {
 
       {step === "profile" && (
         <>
-          <h2>사용자 프로필</h2>
-          <p>
-            정확한 분석을 위해 프로필 정보를 입력하세요. 건너뛰기를 누르면
-            기본값으로 분석합니다.
-          </p>
+          <h2>{t("uploadPage.profileTitle")}</h2>
+          <p>{t("uploadPage.profileIntro")}</p>
           <UserProfileForm
             userId={DEFAULT_USER_ID}
             onSaved={handleProfileSaved}
@@ -94,7 +90,7 @@ export function UploadPage() {
                 cursor: isStarting ? "not-allowed" : "pointer",
               }}
             >
-              건너뛰고 분석 시작
+              {t("uploadPage.skipAndStart")}
             </button>
           </div>
           {error && (
@@ -105,7 +101,7 @@ export function UploadPage() {
 
       {step === "starting" && (
         <div style={{ textAlign: "center", padding: "2rem" }}>
-          <p>분석을 시작하는 중...</p>
+          <p>{t("uploadPage.starting")}</p>
         </div>
       )}
     </main>

@@ -2,6 +2,7 @@
  * Plays the analysis overlay video that shows pose skeleton + bat trajectory
  * (Requirement 8.2).
  */
+import { useTranslation } from "../i18n";
 import "./OverlayVideoPlayer.css";
 
 export interface OverlayVideoPlayerProps {
@@ -16,15 +17,18 @@ export interface OverlayVideoPlayerProps {
 export function OverlayVideoPlayer({
   videoUrl,
   posterUrl,
-  title = "오버레이 비디오",
+  title,
 }: OverlayVideoPlayerProps) {
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t("overlay.title");
+
   return (
     <section
       className="overlay-video"
-      aria-label="오버레이 비디오 플레이어"
+      aria-label={t("overlay.aria")}
       data-testid="overlay-video"
     >
-      <h3 className="overlay-video__title">{title}</h3>
+      <h3 className="overlay-video__title">{resolvedTitle}</h3>
       {videoUrl ? (
         <video
           className="overlay-video__player"
@@ -34,7 +38,7 @@ export function OverlayVideoPlayer({
           preload="metadata"
           data-testid="overlay-video-element"
         >
-          이 브라우저는 비디오 재생을 지원하지 않습니다.
+          {t("overlay.unsupported")}
         </video>
       ) : (
         <div
@@ -42,7 +46,7 @@ export function OverlayVideoPlayer({
           data-testid="overlay-video-placeholder"
           role="status"
         >
-          오버레이 비디오를 사용할 수 없습니다.
+          {t("overlay.unavailable")}
         </div>
       )}
     </section>

@@ -9,6 +9,7 @@
  * documented in the design.
  */
 import type { SwingPhaseResponse } from "../types/analysis";
+import { useTranslation } from "../i18n";
 import "./ComparisonView.css";
 
 export interface ReferencePhase {
@@ -80,9 +81,11 @@ function buildRows(
 export function ComparisonView({
   userPhases,
   referencePhases = DEFAULT_REFERENCE_PHASES,
-  title = "사용자 vs 프로 비교 (단계 지속 시간)",
+  title,
 }: ComparisonViewProps) {
+  const { t } = useTranslation();
   const rows = buildRows(userPhases, referencePhases);
+  const resolvedTitle = title ?? t("comparison.title");
   const maxMs = Math.max(
     1,
     ...rows.flatMap((r) => [r.user_ms ?? 0, r.reference_ms ?? 0]),
@@ -91,33 +94,33 @@ export function ComparisonView({
   return (
     <section
       className="comparison-view"
-      aria-label="사용자 vs 프로 비교 뷰"
+      aria-label={t("comparison.aria")}
       data-testid="comparison-view"
     >
-      <h3 className="comparison-view__title">{title}</h3>
+      <h3 className="comparison-view__title">{resolvedTitle}</h3>
       <div className="comparison-view__legend" aria-hidden="true">
         <span>
           <span className="comparison-view__legend-swatch comparison-view__legend-swatch--user" />
-          사용자
+          {t("comparison.user")}
         </span>
         <span>
           <span className="comparison-view__legend-swatch comparison-view__legend-swatch--reference" />
-          프로 참조
+          {t("comparison.reference")}
         </span>
       </div>
       {rows.length === 0 ? (
         <p className="comparison-view__empty" data-testid="comparison-view-empty">
-          비교할 스윙 단계 데이터가 없습니다.
+          {t("comparison.empty")}
         </p>
       ) : (
         <table className="comparison-view__table">
           <thead>
             <tr>
-              <th scope="col">단계</th>
-              <th scope="col">사용자 (ms)</th>
-              <th scope="col">프로 (ms)</th>
+              <th scope="col">{t("comparison.phase")}</th>
+              <th scope="col">{t("comparison.userMs")}</th>
+              <th scope="col">{t("comparison.referenceMs")}</th>
               <th scope="col" className="comparison-view__bar-cell">
-                비교
+                {t("comparison.compare")}
               </th>
             </tr>
           </thead>
@@ -138,7 +141,7 @@ export function ComparisonView({
                   <div className="comparison-view__bars">
                     <div
                       className="comparison-view__bar"
-                      aria-label={`사용자 ${row.phase} 지속시간`}
+                      aria-label={t("comparison.userDuration", { phase: row.phase })}
                     >
                       <div
                         className="comparison-view__bar-fill comparison-view__bar-fill--user"
@@ -153,7 +156,7 @@ export function ComparisonView({
                     </div>
                     <div
                       className="comparison-view__bar"
-                      aria-label={`프로 ${row.phase} 지속시간`}
+                      aria-label={t("comparison.referenceDuration", { phase: row.phase })}
                     >
                       <div
                         className="comparison-view__bar-fill comparison-view__bar-fill--reference"

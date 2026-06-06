@@ -15,6 +15,7 @@
  * "minimum recordings" message (Requirement 8.8).
  */
 import type { AnalysisReportResponse, TrendDataResponse } from "../types/analysis";
+import { useTranslation } from "../i18n";
 import { ComparisonView } from "./ComparisonView";
 import { DrillRecommendationCard } from "./DrillRecommendationCard";
 import { ImprovementAreasList } from "./ImprovementAreasList";
@@ -36,20 +37,21 @@ function formatCreatedAt(iso: string): string {
 }
 
 export function AnalysisReport({ report, trendData }: AnalysisReportProps) {
+  const { t } = useTranslation();
   const effectiveTrendData = trendData ?? report.trend_data ?? null;
 
   return (
     <article
       className="analysis-report"
-      aria-label="분석 결과 리포트"
+      aria-label={t("report.aria")}
       data-testid="analysis-report"
       data-analysis-id={report.analysis_id}
     >
       <header className="analysis-report__header">
-        <h2 className="analysis-report__title">분석 리포트</h2>
+        <h2 className="analysis-report__title">{t("report.title")}</h2>
         <span className="analysis-report__meta">
-          분석 ID: {report.analysis_id} · 생성일{" "}
-          {formatCreatedAt(report.created_at)}
+          {t("report.analysisId", { id: report.analysis_id })} -{" "}
+          {t("report.createdAt", { date: formatCreatedAt(report.created_at) })}
         </span>
       </header>
 
@@ -61,13 +63,13 @@ export function AnalysisReport({ report, trendData }: AnalysisReportProps) {
 
       <section
         className="analysis-report__section"
-        aria-label="드릴 추천"
+        aria-label={t("report.drillsAria")}
         data-testid="analysis-report-drills"
       >
-        <h3 className="analysis-report__section-title">추천 드릴</h3>
+        <h3 className="analysis-report__section-title">{t("report.drillsTitle")}</h3>
         {report.drill_recommendations.length === 0 ? (
           <p data-testid="analysis-report-drills-empty">
-            추천 드릴이 없습니다.
+            {t("report.noDrills")}
           </p>
         ) : (
           <div className="analysis-report__drills-grid">

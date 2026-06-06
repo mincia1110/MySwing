@@ -61,11 +61,15 @@ export async function getAnalysisStatus(
  */
 export async function getAnalysisReport(
   analysisId: string,
-  client: AxiosInstance = defaultClient,
+  localeOrClient: "ko" | "en" | AxiosInstance = defaultClient,
+  clientArg?: AxiosInstance,
 ): Promise<AnalysisReportResponse> {
-  const response = await client.get<AnalysisReportResponse>(
-    `/analyses/${encodeURIComponent(analysisId)}/report`,
-  );
+  const locale = typeof localeOrClient === "string" ? localeOrClient : null;
+  const client = typeof localeOrClient === "string" ? (clientArg ?? defaultClient) : localeOrClient;
+  const url = `/analyses/${encodeURIComponent(analysisId)}/report`;
+  const response = locale
+    ? await client.get<AnalysisReportResponse>(url, { params: { locale } })
+    : await client.get<AnalysisReportResponse>(url);
   return response.data;
 }
 
