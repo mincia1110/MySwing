@@ -1,0 +1,43 @@
+.analysis-report {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-family: system-ui, sans-serif;
+}
+
+.analysis-report__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.analysis-report__title {
+  margin: 0;
+  font-size: 22px;
+  color: #111827;
+}
+
+.analysis-report__meta {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.analysis-report__drills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.analysis-report__section-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: #111827;
+}
+
+.analysis-report__section {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: #ffffff;
+}

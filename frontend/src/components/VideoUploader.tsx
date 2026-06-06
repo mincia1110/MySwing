@@ -1,0 +1,362 @@
+/**
+ * Video upload component.
+ *
+ * Flow:
+ *  1. User selects a file via input or drag-and-drop.
+ *  2. Component requests a presigned URL from the backend.
+ *  3. File is uploaded directly to S3 via XMLHttpRequest with progress.
+ *  4. After upload, backend metadata endpoint is invoked to get
+ *     thumbnail + video metadata (Requirement 1.7).
+ *  5. Caller is notified via onUploadComplete with the file_key + metadata.
+ *
+ * Quality check display (Requirement 9.8) is rendered when a `qualityResult`
+ * prop is supplied by the parent (the quality endpoint is fed by a separate
+ * task).
+ */
+import { useCallback, useRef, useState } from "react";
+import {
+  getMetadata,
+  getPresignedUrl,
+  uploadToS3,
+  type UploadProgressEvent,
+} from "../api/client";
+import type {
+  PresignedUrlResponse,
+  QualityCheckResponse,
+  VideoMetadataWithThumbnailResponse,
+} from "../types/video";
+import { QualityCheckResult } from "./QualityCheckResult";
+import { UploadProgress } from "./UploadProgress";
+import { VideoMetadataDisplay } from "./VideoMetadataDisplay";
+import "./VideoUploader.css";
+
+export interface VideoUploaderProps {
+  /** Called when the full pipeline (upload + metadata) succeeds. */
+  onUploadComplete?: (result: {
+    fileKey: string;
+    metadata: VideoMetadataWithThumbnailResponse;
+  }) => void;
+  /** Called whenever an error occurs during the upload pipeline. */
+  onUploadError?: (error: Error) => void;
+  /** Optional quality check result rendered after upload completes. */
+  qualityResult?: QualityCheckResponse | null;
+  /** Maximum allowed file size in bytes. Defaults to 500MB (Requirement 1.2). */
+  maxFileSizeBytes?: number;
+  /** Allowed MIME types. Defaults to backend-supported video formats. */
+  acceptedMimeTypes?: string[];
+}
+
+const DEFAULT_MAX_SIZE = 500 * 1024 * 1024;
+const DEFAULT_MIME_TYPES = [
+  "video/mp4",
+  "video/quicktime",
+  "video/x-msvideo",
+];
+
+// Allowed file extensions (fallback when MIME type is empty or generic)
+const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi"];
+
+type UploadStage =
+  | "idle"
+  | "preparing"
+  | "uploading"
+  | "fetching-metadata"
+  | "complete"
+  | "error";
+
+interface UploadState {
+  stage: UploadStage;
+  percent: number;
+  fileName: string | null;
+  errorMessage: string | null;
+  metadata: VideoMetadataWithThumbnailResponse | null;
+  fileKey: string | null;
+}
+
+const INITIAL_STATE: UploadState = {
+  stage: "idle",
+  percent: 0,
+  fileName: null,
+  errorMessage: null,
+  metadata: null,
+  fileKey: null,
+};
+
+function stageLabel(stage: UploadStage): string {
+  switch (stage) {
+    case "preparing":
+      return "업로드 URL 요청 중...";
+    case "uploading":
+      return "업로드 중...";
+    case "fetching-metadata":
+      return "메타데이터 분석 중...";
+    case "complete":
+      return "업로드 완료";
+    case "error":
+      return "업로드 실패";
+    default:
+      return "";
+  }
+}
+
+export function VideoUploader({
+  onUploadComplete,
+  onUploadError,
+  qualityResult,
+  maxFileSizeBytes = DEFAULT_MAX_SIZE,
+  acceptedMimeTypes = DEFAULT_MIME_TYPES,
+}: VideoUploaderProps) {
+  const [state, setState] = useState<UploadState>(INITIAL_STATE);
+  const [isDragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const validateFile = useCallback(
+    (file: File): string | null => {
+      // Check MIME type first; if empty/generic, fall back to extension check
+      const mimeOk = acceptedMimeTypes.length === 0 || acceptedMimeTypes.includes(file.type);
+      const ext = "." + file.name.split(".").pop()?.toLowerCase();
+      const extOk = ALLOWED_EXTENSIONS.includes(ext);
+
+      if (!mimeOk && !extOk) {
+        return `지원하지 않는 형식입니다: ${file.type || ext}. MP4, MOV, AVI만 지원합니다.`;
+      }
+      if (file.size > maxFileSizeBytes) {
+        const limitMb = Math.round(maxFileSizeBytes / (1024 * 1024));
+        return `파일 크기가 너무 큽니다. 최대 ${limitMb}MB`;
+      }
+      return null;
+    },
+    [acceptedMimeTypes, maxFileSizeBytes],
+  );
+
+  const startUpload = useCallback(
+    async (file: File) => {
+      const validationError = validateFile(file);
+      if (validationError) {
+        setState({
+          stage: "error",
+          percent: 0,
+          fileName: file.name,
+          errorMessage: validationError,
+          metadata: null,
+          fileKey: null,
+        });
+        onUploadError?.(new Error(validationError));
+        return;
+      }
+
+      setState({
+        stage: "preparing",
+        percent: 0,
+        fileName: file.name,
+        errorMessage: null,
+        metadata: null,
+        fileKey: null,
+      });
+
+      let presigned: PresignedUrlResponse;
+      let resolvedContentType = "";
+      try {
+        // Determine content_type: use file.type if available, otherwise infer from extension
+        resolvedContentType = file.type;
+        if (!resolvedContentType) {
+          const ext = file.name.split(".").pop()?.toLowerCase();
+          if (ext === "mov") resolvedContentType = "video/quicktime";
+          else if (ext === "avi") resolvedContentType = "video/x-msvideo";
+          else resolvedContentType = "video/mp4";
+        }
+        presigned = await getPresignedUrl({
+          file_name: file.name,
+          content_type: resolvedContentType,
+        });
+      } catch (err) {
+        const error =
+          err instanceof Error ? err : new Error("Presigned URL request failed");
+        setState((prev) => ({
+          ...prev,
+          stage: "error",
+          errorMessage: error.message,
+        }));
+        onUploadError?.(error);
+        return;
+      }
+
+      setState((prev) => ({ ...prev, stage: "uploading", fileKey: presigned.file_key }));
+
+      try {
+        await uploadToS3(presigned.upload_url, file, {
+          contentType: resolvedContentType,
+          onProgress: (event: UploadProgressEvent) => {
+            setState((prev) =>
+              prev.stage === "uploading"
+                ? { ...prev, percent: event.percent }
+                : prev,
+            );
+          },
+        });
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error("S3 upload failed");
+        setState((prev) => ({
+          ...prev,
+          stage: "error",
+          errorMessage: error.message,
+        }));
+        onUploadError?.(error);
+        return;
+      }
+
+      setState((prev) => ({
+        ...prev,
+        stage: "fetching-metadata",
+        percent: 100,
+      }));
+
+      try {
+        const metadata = await getMetadata(presigned.file_key);
+        setState({
+          stage: "complete",
+          percent: 100,
+          fileName: file.name,
+          errorMessage: null,
+          metadata,
+          fileKey: presigned.file_key,
+        });
+        onUploadComplete?.({ fileKey: presigned.file_key, metadata });
+      } catch (err) {
+        const error =
+          err instanceof Error ? err : new Error("Metadata fetch failed");
+        setState((prev) => ({
+          ...prev,
+          stage: "error",
+          errorMessage: error.message,
+        }));
+        onUploadError?.(error);
+      }
+    },
+    [onUploadComplete, onUploadError, validateFile],
+  );
+
+  const handleFileInput = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (file) {
+        void startUpload(file);
+      }
+      // Allow re-uploading the same file by clearing the input value.
+      event.target.value = "";
+    },
+    [startUpload],
+  );
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      setDragOver(false);
+      const file = event.dataTransfer.files?.[0];
+      if (file) {
+        void startUpload(file);
+      }
+    },
+    [startUpload],
+  );
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setDragOver(false);
+  }, []);
+
+  const handleSelectClick = useCallback(() => {
+    inputRef.current?.click();
+  }, []);
+
+  const reset = useCallback(() => {
+    setState(INITIAL_STATE);
+  }, []);
+
+  const isUploading =
+    state.stage === "preparing" ||
+    state.stage === "uploading" ||
+    state.stage === "fetching-metadata";
+
+  return (
+    <div className="video-uploader" data-testid="video-uploader">
+      <div
+        className={[
+          "video-uploader__dropzone",
+          isDragOver ? "video-uploader__dropzone--dragover" : "",
+          isUploading ? "video-uploader__dropzone--disabled" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onClick={isUploading ? undefined : handleSelectClick}
+        role="button"
+        tabIndex={0}
+        aria-disabled={isUploading}
+        aria-label="비디오 파일을 드롭하거나 클릭하여 선택"
+        data-testid="video-uploader-dropzone"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (!isUploading) handleSelectClick();
+          }
+        }}
+      >
+        <p className="video-uploader__hint">
+          비디오 파일을 끌어다 놓거나 클릭하여 선택하세요
+        </p>
+        <p className="video-uploader__formats">MP4, MOV, AVI · 최대 500MB</p>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".mp4,.mov,.avi,video/mp4,video/quicktime,video/x-msvideo"
+          onChange={handleFileInput}
+          data-testid="video-uploader-input"
+          aria-label="비디오 파일 선택"
+          style={{ display: "none" }}
+        />
+      </div>
+
+      {state.fileName && state.stage !== "idle" ? (
+        <div className="video-uploader__status">
+          <UploadProgress
+            percent={state.percent}
+            label={`${state.fileName} - ${stageLabel(state.stage)}`}
+            error={state.errorMessage}
+          />
+        </div>
+      ) : null}
+
+      {state.metadata ? (
+        <div className="video-uploader__metadata">
+          <VideoMetadataDisplay metadata={state.metadata} />
+        </div>
+      ) : null}
+
+      {qualityResult ? (
+        <div className="video-uploader__quality">
+          <QualityCheckResult result={qualityResult} />
+        </div>
+      ) : null}
+
+      {state.stage === "error" || state.stage === "complete" ? (
+        <button
+          type="button"
+          className="video-uploader__reset"
+          onClick={reset}
+          data-testid="video-uploader-reset"
+        >
+          {state.stage === "error" ? "다시 시도" : "다른 파일 업로드"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export default VideoUploader;

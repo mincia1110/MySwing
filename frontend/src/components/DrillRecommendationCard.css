@@ -1,0 +1,33 @@
+.drill-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #ffffff;
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drill-card__name {
+  margin: 0;
+  font-size: 15px;
+  color: #111827;
+}
+
+.drill-card__target {
+  font-size: 12px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  padding: 2px 8px;
+  border-radius: 999px;
+  display: inline-block;
+  align-self: flex-start;
+}
+
+.drill-card__description {
+  margin: 0;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.4;
+}

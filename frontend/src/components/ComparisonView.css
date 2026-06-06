@@ -1,0 +1,87 @@
+.comparison-view {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: #ffffff;
+  font-family: system-ui, sans-serif;
+}
+
+.comparison-view__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: #111827;
+}
+
+.comparison-view__legend {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: #4b5563;
+  margin-bottom: 8px;
+}
+
+.comparison-view__legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.comparison-view__legend-swatch--user {
+  background-color: #3b82f6;
+}
+
+.comparison-view__legend-swatch--reference {
+  background-color: #9ca3af;
+}
+
+.comparison-view__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.comparison-view__table th,
+.comparison-view__table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #f3f4f6;
+  font-variant-numeric: tabular-nums;
+}
+
+.comparison-view__bar-cell {
+  min-width: 160px;
+}
+
+.comparison-view__bars {
+  display: grid;
+  gap: 4px;
+}
+
+.comparison-view__bar {
+  height: 8px;
+  border-radius: 4px;
+  background-color: #e5e7eb;
+  overflow: hidden;
+}
+
+.comparison-view__bar-fill {
+  height: 100%;
+}
+
+.comparison-view__bar-fill--user {
+  background-color: #3b82f6;
+}
+
+.comparison-view__bar-fill--reference {
+  background-color: #9ca3af;
+}
+
+.comparison-view__empty {
+  padding: 16px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 14px;
+}

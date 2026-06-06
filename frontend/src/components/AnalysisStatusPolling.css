@@ -1,0 +1,52 @@
+.analysis-status {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+  background: #ffffff;
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.analysis-status__title {
+  margin: 0;
+  font-size: 16px;
+  color: #111827;
+}
+
+.analysis-status__phase {
+  font-size: 14px;
+  color: #374151;
+}
+
+.analysis-status__phase strong {
+  color: #1d4ed8;
+}
+
+.analysis-status__bar {
+  width: 100%;
+  height: 12px;
+  background-color: #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.analysis-status__fill {
+  height: 100%;
+  background-color: #3b82f6;
+  transition: width 200ms linear;
+}
+
+.analysis-status--completed .analysis-status__fill {
+  background-color: #10b981;
+}
+
+.analysis-status--failed .analysis-status__fill {
+  background-color: #ef4444;
+}
+
+.analysis-status__error {
+  color: #ef4444;
+  font-size: 13px;
+}

@@ -1,0 +1,75 @@
+.improvements {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: #ffffff;
+  font-family: system-ui, sans-serif;
+}
+
+.improvements__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: #111827;
+}
+
+.improvements__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.improvements__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #f3f4f6;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.improvements__rank {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #1d4ed8;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.improvements__metric {
+  display: flex;
+  flex-direction: column;
+}
+
+.improvements__metric-name {
+  font-size: 14px;
+  color: #111827;
+  font-weight: 500;
+}
+
+.improvements__metric-detail {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.improvements__deviation {
+  font-size: 14px;
+  font-weight: 600;
+  color: #b91c1c;
+  font-variant-numeric: tabular-nums;
+}
+
+.improvements__empty {
+  padding: 16px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 14px;
+}

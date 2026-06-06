@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.hypothesis/
+
+# Docker
+postgres_data/
+redis_data/
+minio_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI / Generated
+.codegraph/
+.kiro/
+scripts.md
+
+# Private review / handoff notes
+HANDOFF.md
+CODE_REVIEW*.md
+code_review*.md
+PROGRESS_SESSION.md
+
+# ML Models
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# Node.js / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist-ssr/
+*.local
+

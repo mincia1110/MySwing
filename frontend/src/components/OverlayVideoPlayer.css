@@ -1,0 +1,30 @@
+.overlay-video {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: #ffffff;
+  font-family: system-ui, sans-serif;
+}
+
+.overlay-video__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: #111827;
+}
+
+.overlay-video__player {
+  width: 100%;
+  max-height: 480px;
+  background: #000;
+  border-radius: 6px;
+  display: block;
+}
+
+.overlay-video__placeholder {
+  padding: 24px;
+  text-align: center;
+  color: #6b7280;
+  background: #f9fafb;
+  border-radius: 6px;
+  font-size: 14px;
+}
