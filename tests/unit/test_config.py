@@ -11,7 +11,10 @@ def test_default_settings() -> None:
     settings = Settings()
     assert settings.app_name == "MySwing"
     assert settings.max_file_size_bytes == 500 * 1024 * 1024
-    assert settings.max_video_duration_seconds == 300.0
+    assert settings.recommended_min_video_duration_seconds == 3.0
+    assert settings.recommended_max_video_duration_seconds == 7.0
+    assert settings.max_video_duration_seconds == 10.0
+    assert settings.ideal_video_duration_seconds == 5.0
     assert settings.min_resolution_width == 1280
     assert settings.min_resolution_height == 720
     assert settings.min_frame_rate == 30.0
@@ -39,7 +42,10 @@ def test_max_file_size_is_500mb() -> None:
 def test_max_duration_is_5_minutes() -> None:
     """Max video duration is 5 minutes (300 seconds) per Requirement 1.2."""
     settings = Settings()
-    assert settings.max_video_duration_seconds == 300.0
+    assert settings.recommended_min_video_duration_seconds == 3.0
+    assert settings.recommended_max_video_duration_seconds == 7.0
+    assert settings.max_video_duration_seconds == 10.0
+    assert settings.ideal_video_duration_seconds == 5.0
 
 
 @pytest.mark.unit

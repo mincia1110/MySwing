@@ -33,6 +33,37 @@ class VideoValidationResult:
 
 
 @dataclass
+class VideoInputPolicyResult:
+    """Structured result for the short single-swing input policy."""
+
+    accepted: bool
+    severity: str
+    reason: str | None
+    duration_sec: float | None
+    ideal_duration_sec: float
+    recommended_min_duration_sec: float
+    recommended_max_duration_sec: float
+    max_duration_sec: float
+    message: str
+    recommendation: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return an API-serializable dictionary."""
+        return {
+            "accepted": self.accepted,
+            "severity": self.severity,
+            "reason": self.reason,
+            "duration_sec": self.duration_sec,
+            "ideal_duration_sec": self.ideal_duration_sec,
+            "recommended_min_duration_sec": self.recommended_min_duration_sec,
+            "recommended_max_duration_sec": self.recommended_max_duration_sec,
+            "max_duration_sec": self.max_duration_sec,
+            "message": self.message,
+            "recommendation": self.recommendation,
+        }
+
+
+@dataclass
 class QualityCheckResult:
     """Result of video quality checks (brightness, framing, resolution, frame rate stability)."""
 

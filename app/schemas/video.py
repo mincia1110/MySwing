@@ -48,7 +48,8 @@ class VideoMetadataResponse(BaseModel):
 class VideoMetadataWithThumbnailResponse(BaseModel):
     """Response schema for video metadata with thumbnail (Requirement 1.7).
 
-    Returns file_name, duration_seconds, resolution, file_size_bytes, and thumbnail_url.
+    Returns file_name, duration_seconds, resolution, file_size_bytes, thumbnail_url,
+    and the single-swing input policy result.
     """
 
     file_name: str
@@ -56,6 +57,7 @@ class VideoMetadataWithThumbnailResponse(BaseModel):
     resolution: ResolutionResponse
     file_size_bytes: int
     thumbnail_url: Optional[str] = None
+    input_validation: Optional[dict] = None
 
 
 class VideoValidationResponse(BaseModel):

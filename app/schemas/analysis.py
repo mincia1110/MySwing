@@ -13,6 +13,37 @@ class AnalysisCreateRequest(BaseModel):
     user_id: str = Field(..., description="User ID to associate with the analysis")
 
 
+class VideoInputPolicyResponse(BaseModel):
+    """Structured validation result for MySwing's single-swing video policy."""
+
+    accepted: bool
+    severity: Literal["ok", "warning", "error"]
+    reason: Optional[
+        Literal[
+            "video_too_short",
+            "video_longer_than_recommended",
+            "video_too_long",
+            "metadata_unavailable",
+        ]
+    ] = None
+    duration_sec: Optional[float] = None
+    ideal_duration_sec: float
+    recommended_min_duration_sec: float
+    recommended_max_duration_sec: float
+    max_duration_sec: float
+    message: str
+    recommendation: str
+
+
+class AnalysisCreateResponse(BaseModel):
+    """Response schema for successfully creating an analysis job."""
+
+    analysis_id: str
+    status: Literal["pending"]
+    message: str
+    input_validation: VideoInputPolicyResponse
+
+
 class AnalysisStatusResponse(BaseModel):
     """Response schema for analysis status polling."""
 

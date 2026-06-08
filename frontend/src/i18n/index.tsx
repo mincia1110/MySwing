@@ -24,7 +24,7 @@ const ko = {
   uploadPage: {
     title: "MySwing - AI 야구 스윙 분석",
     intro:
-      "분석할 야구 스윙 비디오를 업로드하세요. 업로드가 완료되면 프로필을 입력하고 분석을 시작할 수 있습니다.",
+      "한 번의 스윙만 담긴 짧은 야구 영상을 업로드하세요. 권장 길이는 3~7초이며, 약 5초 영상이 가장 적합합니다.",
     profileTitle: "사용자 프로필",
     profileIntro:
       "정확한 분석을 위해 프로필 정보를 입력하세요. 건너뛰기를 누르면 기본값으로 분석합니다.",
@@ -51,11 +51,14 @@ const ko = {
       "지원하지 않는 형식입니다: {type}. MP4, MOV, AVI만 지원합니다.",
     fileTooLarge: "파일 크기가 너무 큽니다. 최대 {limitMb}MB",
     dropzoneLabel: "비디오 파일을 드롭하거나 클릭하여 선택",
-    hint: "비디오 파일을 끌어다 놓거나 클릭하여 선택하세요",
-    formats: "MP4, MOV, AVI - 최대 500MB",
-    inputLabel: "비디오 파일 선택",
+    hint: "한 번의 스윙만 담긴 짧은 영상을 업로드하세요. 권장 길이는 3~7초이며, 약 5초 영상이 가장 적합합니다.",
+    formats: "MP4, MOV, AVI - 최대 500MB, 최대 10초. 긴 영상은 한 번의 스윙만 남기고 잘라주세요.",
+    inputLabel: "한 번의 스윙만 담긴 비디오 파일 선택",
     retry: "다시 시도",
     uploadAnother: "다른 파일 업로드",
+    durationTooLong: "영상 길이가 10초를 초과했습니다. 한 번의 스윙만 담기도록 클립을 잘라 업로드하세요.",
+    durationWarning: "권장 길이는 3~7초입니다. 약 5초 분량의 한 번의 스윙 클립이 가장 적합합니다.",
+    durationCheckUnavailable: "브라우저에서 영상 길이를 확인할 수 없습니다. 서버에서 다시 검증합니다.",
   },
   profile: {
     loading: "프로필 불러오는 중...",
@@ -227,7 +230,7 @@ const en = {
   uploadPage: {
     title: "MySwing - AI Baseball Swing Analysis",
     intro:
-      "Upload a baseball swing video. After upload completes, enter your profile and start the analysis.",
+      "Upload a short baseball video containing exactly one swing. Recommended length is 3–7 seconds; around 5 seconds is ideal.",
     profileTitle: "User Profile",
     profileIntro:
       "Enter profile details for a more accurate analysis. If you skip this step, default values will be used.",
@@ -254,11 +257,14 @@ const en = {
       "Unsupported file type: {type}. Only MP4, MOV, and AVI are supported.",
     fileTooLarge: "File is too large. Maximum {limitMb}MB",
     dropzoneLabel: "Drop a video file or click to select",
-    hint: "Drop a video file here or click to select one",
-    formats: "MP4, MOV, AVI - up to 500MB",
-    inputLabel: "Select video file",
+    hint: "Upload a short video containing exactly one swing. Recommended length is 3–7 seconds; around 5 seconds is ideal.",
+    formats: "MP4, MOV, AVI - up to 500MB and 10 seconds. Trim long videos to a single swing.",
+    inputLabel: "Select a single-swing video file",
     retry: "Try Again",
     uploadAnother: "Upload Another File",
+    durationTooLong: "This video is longer than 10 seconds. Trim it to a short clip containing exactly one swing.",
+    durationWarning: "Recommended length is 3–7 seconds; around 5 seconds with exactly one swing is ideal.",
+    durationCheckUnavailable: "The browser could not read the video duration. The server will validate it again.",
   },
   profile: {
     loading: "Loading profile...",

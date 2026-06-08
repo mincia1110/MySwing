@@ -5,6 +5,8 @@
  * app/schemas/history.py.
  */
 
+import type { VideoInputPolicyResponse } from "./video";
+
 export type AnalysisStatus =
   | "pending"
   | "preprocessing"
@@ -27,6 +29,7 @@ export interface AnalysisCreateResponse {
   analysis_id: string;
   status: AnalysisStatus;
   message?: string;
+  input_validation?: VideoInputPolicyResponse;
 }
 
 export interface AnalysisStatusResponse {

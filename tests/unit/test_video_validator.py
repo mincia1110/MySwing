@@ -6,19 +6,13 @@ and the combined validate_video function.
 """
 
 import os
-import tempfile
-from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
 import pytest
 
 from app.core.constants import (
-    MAX_DURATION_SECONDS,
     MAX_FILE_SIZE_BYTES,
-    MIN_FRAME_RATE,
-    MIN_RESOLUTION_HEIGHT,
-    MIN_RESOLUTION_WIDTH,
 )
 from app.services.video_validator import (
     extract_metadata,
@@ -29,9 +23,9 @@ from app.services.video_validator import (
     validate_integrity,
     validate_mime_type,
     validate_resolution,
+    validate_single_swing_input_policy,
     validate_video,
 )
-
 
 # --- Format Validation Tests ---
 
@@ -207,27 +201,68 @@ class TestValidateFrameRate:
 
 
 class TestValidateDuration:
-    """Tests for validate_duration function."""
+    """Tests for hard single-swing duration validation."""
 
-    def test_exactly_300_seconds(self) -> None:
-        """Exactly 300 seconds (5 minutes) should be accepted."""
-        assert validate_duration(300.0) is True
+    def test_exactly_10_seconds(self) -> None:
+        """Exactly 10 seconds should be accepted at the hard maximum."""
+        assert validate_duration(10.0) is True
 
-    def test_below_300_seconds(self) -> None:
-        """Below 300 seconds should be accepted."""
-        assert validate_duration(299.99) is True
+    def test_below_10_seconds(self) -> None:
+        """Below 10 seconds should be accepted."""
+        assert validate_duration(9.99) is True
 
-    def test_over_300_seconds(self) -> None:
-        """Over 300 seconds should be rejected."""
-        assert validate_duration(300.01) is False
+    def test_over_10_seconds(self) -> None:
+        """Over 10 seconds should be rejected."""
+        assert validate_duration(10.01) is False
 
     def test_zero_duration(self) -> None:
-        """Zero duration should be accepted (duration check only)."""
-        assert validate_duration(0.0) is True
+        """Zero duration should not pass the single-swing input policy silently."""
+        assert validate_duration(0.0) is False
 
-    def test_10_minutes(self) -> None:
-        """10 minutes (600s) should be rejected."""
-        assert validate_duration(600.0) is False
+
+class TestSingleSwingInputPolicy:
+    """Tests for structured short single-swing clip policy results."""
+
+    def test_five_second_video_accepted_ok(self) -> None:
+        result = validate_single_swing_input_policy(5.0)
+
+        assert result.accepted is True
+        assert result.severity == "ok"
+        assert result.reason is None
+        assert result.duration_sec == 5.0
+        assert result.ideal_duration_sec == 5.0
+
+    def test_two_second_video_accepted_with_warning(self) -> None:
+        result = validate_single_swing_input_policy(2.0)
+
+        assert result.accepted is True
+        assert result.severity == "warning"
+        assert result.reason == "video_too_short"
+        assert "3~7초" in result.recommendation
+
+    @pytest.mark.parametrize("duration", [8.0, 9.0])
+    def test_eight_or_nine_second_video_accepted_with_warning(self, duration: float) -> None:
+        result = validate_single_swing_input_policy(duration)
+
+        assert result.accepted is True
+        assert result.severity == "warning"
+        assert result.reason == "video_longer_than_recommended"
+
+    def test_eleven_second_video_rejected(self) -> None:
+        result = validate_single_swing_input_policy(11.0)
+
+        assert result.accepted is False
+        assert result.severity == "error"
+        assert result.reason == "video_too_long"
+        assert result.max_duration_sec == 10.0
+
+    def test_metadata_unavailable_rejected(self) -> None:
+        result = validate_single_swing_input_policy(None)
+
+        assert result.accepted is False
+        assert result.severity == "error"
+        assert result.reason == "metadata_unavailable"
+        assert result.duration_sec is None
 
 
 # --- Metadata Extraction Tests ---
@@ -326,7 +361,7 @@ class TestValidateIntegrity:
     def test_empty_file_integrity(self, tmp_path) -> None:
         """An empty file should fail integrity check."""
         empty_path = str(tmp_path / "empty.mp4")
-        with open(empty_path, "w") as f:
+        with open(empty_path, "w"):
             pass
 
         assert validate_integrity(empty_path) is False

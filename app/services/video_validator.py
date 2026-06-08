@@ -12,15 +12,18 @@ from pathlib import Path
 import cv2
 
 from app.core.constants import (
+    IDEAL_DURATION_SEC,
     MAX_DURATION_SECONDS,
     MAX_FILE_SIZE_BYTES,
     MIN_FRAME_RATE,
     MIN_RESOLUTION_HEIGHT,
     MIN_RESOLUTION_WIDTH,
+    RECOMMENDED_MAX_DURATION_SEC,
+    RECOMMENDED_MIN_DURATION_SEC,
     SUPPORTED_FORMATS,
     SUPPORTED_MIME_TYPES,
 )
-from app.models.video import VideoMetadata, VideoValidationResult
+from app.models.video import VideoInputPolicyResult, VideoMetadata, VideoValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -91,15 +94,85 @@ def validate_frame_rate(fps: float) -> bool:
 
 
 def validate_duration(duration_seconds: float) -> bool:
-    """Check if the video duration is within the allowed limit (≤300 seconds).
+    """Check if duration passes the hard single-swing clip limit.
 
-    Args:
-        duration_seconds: Video duration in seconds.
-
-    Returns:
-        True if duration is within limits, False otherwise.
+    MySwing is optimized for one swing per video. The recommended range is
+    3-7 seconds, with a hard maximum of 10 seconds.
     """
-    return duration_seconds <= MAX_DURATION_SECONDS
+    return 0 < duration_seconds <= MAX_DURATION_SECONDS
+
+
+def _policy_base(duration_seconds: float | None) -> dict[str, float | None]:
+    return {
+        "duration_sec": duration_seconds,
+        "ideal_duration_sec": IDEAL_DURATION_SEC,
+        "recommended_min_duration_sec": RECOMMENDED_MIN_DURATION_SEC,
+        "recommended_max_duration_sec": RECOMMENDED_MAX_DURATION_SEC,
+        "max_duration_sec": MAX_DURATION_SECONDS,
+    }
+
+
+def validate_single_swing_input_policy(
+    duration_seconds: float | None,
+) -> VideoInputPolicyResult:
+    """Return structured validation for MySwing's single-swing clip policy."""
+    base = _policy_base(duration_seconds)
+    recommendation = (
+        "한 번의 스윙만 담긴 3~7초 클립으로 잘라 업로드하세요. "
+        "약 5초 영상이 가장 적합합니다."
+    )
+
+    if duration_seconds is None or duration_seconds <= 0:
+        return VideoInputPolicyResult(
+            accepted=False,
+            severity="error",
+            reason="metadata_unavailable",
+            message="영상 길이 메타데이터를 확인할 수 없어 분석을 시작할 수 없습니다.",
+            recommendation=(
+                "파일이 올바른 비디오인지 확인한 뒤, 한 번의 스윙만 담긴 짧은 클립으로 "
+                "다시 업로드하세요."
+            ),
+            **base,
+        )
+
+    if duration_seconds > MAX_DURATION_SECONDS:
+        return VideoInputPolicyResult(
+            accepted=False,
+            severity="error",
+            reason="video_too_long",
+            message=f"영상 길이가 {MAX_DURATION_SECONDS:g}초를 초과하여 분석할 수 없습니다.",
+            recommendation=recommendation,
+            **base,
+        )
+
+    if duration_seconds < RECOMMENDED_MIN_DURATION_SEC:
+        return VideoInputPolicyResult(
+            accepted=True,
+            severity="warning",
+            reason="video_too_short",
+            message="영상이 권장 길이보다 짧아 일부 스윙 단계 분석이 불안정할 수 있습니다.",
+            recommendation=recommendation,
+            **base,
+        )
+
+    if duration_seconds > RECOMMENDED_MAX_DURATION_SEC:
+        return VideoInputPolicyResult(
+            accepted=True,
+            severity="warning",
+            reason="video_longer_than_recommended",
+            message="영상이 권장 길이보다 길어 분석 정확도가 떨어질 수 있습니다.",
+            recommendation=recommendation,
+            **base,
+        )
+
+    return VideoInputPolicyResult(
+        accepted=True,
+        severity="ok",
+        reason=None,
+        message="단일 스윙 클립 길이가 권장 범위에 있습니다.",
+        recommendation="현재 길이가 적합합니다. 약 5초 전후의 단일 스윙 클립이 가장 좋습니다.",
+        **base,
+    )
 
 
 def extract_metadata(file_path: str) -> VideoMetadata:
@@ -257,7 +330,8 @@ def validate_video(file_path: str, file_size_bytes: int) -> VideoValidationResul
             duration_ok = validate_duration(metadata.duration_seconds)
             if not duration_ok:
                 errors.append(
-                    "최대 영상 길이(5분)를 초과했습니다."
+                    "최대 영상 길이(10초)를 초과했습니다. "
+                    "한 번의 스윙만 담긴 짧은 클립을 업로드하세요."
                 )
 
             # Integrity validation

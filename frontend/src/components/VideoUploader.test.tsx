@@ -56,7 +56,7 @@ describe("VideoUploader", () => {
     render(<VideoUploader />);
     expect(screen.getByTestId("video-uploader-dropzone")).toBeInTheDocument();
     expect(
-      screen.getByText(/비디오 파일을 끌어다 놓거나/),
+      screen.getByText(/한 번의 스윙만 담긴 짧은 영상/),
     ).toBeInTheDocument();
   });
 
@@ -94,6 +94,64 @@ describe("VideoUploader", () => {
       expect(onError).toHaveBeenCalledWith(
         expect.objectContaining({ message: expect.stringContaining("너무 큽니다") }),
       );
+    });
+  });
+
+
+  it("blocks videos longer than 10 seconds before requesting an upload URL", async () => {
+    const onError = vi.fn();
+    render(<VideoUploader onUploadError={onError} />);
+
+    const input = screen.getByTestId("video-uploader-input") as HTMLInputElement;
+    const longFile = makeFile("long-session.mp4", "video/mp4", 1024 * 1024);
+    Object.defineProperty(longFile, "duration", { value: 11 });
+    fireEvent.change(input, { target: { files: [longFile] } });
+
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining("10초") }),
+      );
+    });
+
+    expect(apiClient.getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+
+  it("shows a warning but uploads when client-side duration is shorter than recommended", async () => {
+    const onComplete = vi.fn();
+    render(<VideoUploader onUploadComplete={onComplete} />);
+
+    const input = screen.getByTestId("video-uploader-input") as HTMLInputElement;
+    const shortFile = makeFile("short-swing.mp4", "video/mp4", 1024 * 1024);
+    Object.defineProperty(shortFile, "duration", { value: 2 });
+    fireEvent.change(input, { target: { files: [shortFile] } });
+
+    expect(
+      await screen.findByText(/권장 길이는 3~7초입니다/),
+    ).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(onComplete).toHaveBeenCalled();
+    });
+    expect(apiClient.getPresignedUrl).toHaveBeenCalled();
+  });
+
+  it("continues upload when browser duration metadata is unavailable", async () => {
+    const onComplete = vi.fn();
+    render(<VideoUploader onUploadComplete={onComplete} />);
+
+    const input = screen.getByTestId("video-uploader-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [makeFile("unknown-duration.mp4")] } });
+
+    await waitFor(() => {
+      expect(onComplete).toHaveBeenCalledWith({
+        fileKey: samplePresigned.file_key,
+        metadata: sampleMetadata,
+      });
+    });
+    expect(apiClient.getPresignedUrl).toHaveBeenCalledWith({
+      file_name: "unknown-duration.mp4",
+      content_type: "video/mp4",
     });
   });
 

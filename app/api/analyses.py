@@ -25,6 +25,7 @@ from app.db.models import (
 from app.db.session import get_async_db
 from app.schemas.analysis import (
     AnalysisCreateRequest,
+    AnalysisCreateResponse,
     AnalysisReportResponse,
     AnalysisStatusResponse,
     DrillRecommendationResponse,
@@ -33,12 +34,13 @@ from app.schemas.analysis import (
     SwingPhaseResponse,
     TrendDataResponse,
 )
-from app.services.s3_client import get_s3_client
 from app.services.localization import (
     localize_drill_recommendations,
     normalize_locale,
 )
+from app.services.s3_client import get_s3_client
 from app.services.trend_service import build_user_trends
+from app.services.video_validator import validate_single_swing_input_policy
 from app.tasks.pipeline import analyze_swing_task
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ def _extract_analysis_metadata(analysis_result: Any) -> dict:
 
 @router.post(
     "",
+    response_model=AnalysisCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Create analysis job",
     description="Create a new swing analysis job. Enqueues the analysis pipeline "
@@ -101,7 +104,24 @@ async def create_analysis(
     if video is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Video not found for file_key: {request.file_key}",
+            detail=(
+                f"Video not found for file_key: {request.file_key}. Metadata may be unavailable; "
+                "upload a valid short single-swing video and fetch metadata before "
+                "starting analysis."
+            ),
+        )
+
+    input_validation = validate_single_swing_input_policy(video.duration_seconds)
+    if not input_validation.accepted:
+        detail_status = input_validation.reason or "metadata_unavailable"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "status": detail_status,
+                "message": input_validation.message,
+                "recommendation": input_validation.recommendation,
+                "input_validation": input_validation.to_dict(),
+            },
         )
 
     # Create analysis record
@@ -127,6 +147,7 @@ async def create_analysis(
         "analysis_id": str(analysis.id),
         "status": "pending",
         "message": "Analysis job created and enqueued for processing.",
+        "input_validation": input_validation.to_dict(),
     }
 
 

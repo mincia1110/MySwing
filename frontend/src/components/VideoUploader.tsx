@@ -48,6 +48,9 @@ export interface VideoUploaderProps {
 }
 
 const DEFAULT_MAX_SIZE = 500 * 1024 * 1024;
+const RECOMMENDED_MIN_DURATION_SEC = 3;
+const RECOMMENDED_MAX_DURATION_SEC = 7;
+const MAX_DURATION_SEC = 10;
 const DEFAULT_MIME_TYPES = [
   "video/mp4",
   "video/quicktime",
@@ -70,6 +73,7 @@ interface UploadState {
   percent: number;
   fileName: string | null;
   errorMessage: string | null;
+  warningMessage: string | null;
   metadata: VideoMetadataWithThumbnailResponse | null;
   fileKey: string | null;
 }
@@ -79,9 +83,46 @@ const INITIAL_STATE: UploadState = {
   percent: 0,
   fileName: null,
   errorMessage: null,
+  warningMessage: null,
   metadata: null,
   fileKey: null,
 };
+
+function readVideoDuration(file: File): Promise<number | null> {
+  const directDuration = (file as File & { duration?: unknown }).duration;
+  if (typeof directDuration === "number" && Number.isFinite(directDuration)) {
+    return Promise.resolve(directDuration);
+  }
+
+  if (
+    typeof document === "undefined" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function" ||
+    typeof URL.revokeObjectURL !== "function"
+  ) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    const objectUrl = URL.createObjectURL(file);
+    const cleanup = () => {
+      URL.revokeObjectURL(objectUrl);
+      video.removeAttribute("src");
+    };
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : null;
+      cleanup();
+      resolve(duration);
+    };
+    video.onerror = () => {
+      cleanup();
+      resolve(null);
+    };
+    video.src = objectUrl;
+  });
+}
 
 function stageLabel(stage: UploadStage, t: (key: string) => string): string {
   switch (stage) {
@@ -140,6 +181,7 @@ export function VideoUploader({
           percent: 0,
           fileName: file.name,
           errorMessage: validationError,
+          warningMessage: null,
           metadata: null,
           fileKey: null,
         });
@@ -147,11 +189,33 @@ export function VideoUploader({
         return;
       }
 
+      const duration = await readVideoDuration(file);
+      if (duration != null && duration > MAX_DURATION_SEC) {
+        const errorMessage = t("uploader.durationTooLong");
+        setState({
+          stage: "error",
+          percent: 0,
+          fileName: file.name,
+          errorMessage,
+          warningMessage: null,
+          metadata: null,
+          fileKey: null,
+        });
+        onUploadError?.(new Error(errorMessage));
+        return;
+      }
+      const warningMessage =
+        duration != null &&
+        (duration < RECOMMENDED_MIN_DURATION_SEC || duration > RECOMMENDED_MAX_DURATION_SEC)
+          ? t("uploader.durationWarning")
+          : null;
+
       setState({
         stage: "preparing",
         percent: 0,
         fileName: file.name,
         errorMessage: null,
+        warningMessage,
         metadata: null,
         fileKey: null,
       });
@@ -215,14 +279,18 @@ export function VideoUploader({
 
       try {
         const metadata = await getMetadata(presigned.file_key);
-        setState({
+        setState((prev) => ({
           stage: "complete",
           percent: 100,
           fileName: file.name,
           errorMessage: null,
+          warningMessage:
+            metadata.input_validation?.severity === "warning"
+              ? metadata.input_validation.message
+              : prev.warningMessage,
           metadata,
           fileKey: presigned.file_key,
-        });
+        }));
         onUploadComplete?.({ fileKey: presigned.file_key, metadata });
       } catch (err) {
         const error =
@@ -235,7 +303,7 @@ export function VideoUploader({
         onUploadError?.(error);
       }
     },
-    [onUploadComplete, onUploadError, validateFile],
+    [onUploadComplete, onUploadError, t, validateFile],
   );
 
   const handleFileInput = useCallback(
@@ -324,6 +392,12 @@ export function VideoUploader({
           style={{ display: "none" }}
         />
       </div>
+
+      {state.warningMessage ? (
+        <p className="video-uploader__warning" role="status">
+          {state.warningMessage}
+        </p>
+      ) : null}
 
       {state.fileName && state.stage !== "idle" ? (
         <div className="video-uploader__status">

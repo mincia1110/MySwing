@@ -2,13 +2,13 @@
 
 English | [한국어](README.ko.md)
 
-MySwing is a file-upload based baseball swing analysis service. It uses computer vision with MediaPipe Pose and wrist/elbow-based bat estimation to detect body posture and bat motion, then generates biomechanics and baseball-theory driven analysis reports.
+MySwing is a file-upload based baseball swing analysis service optimized for short clips that contain exactly one baseball swing. The ideal input is about 5 seconds; the recommended range is 3-7 seconds, and videos longer than 10 seconds are rejected before expensive analysis starts. It uses computer vision with MediaPipe Pose and wrist/elbow-based bat estimation to detect body posture and bat motion, then generates biomechanics and baseball-theory driven analysis reports.
 
 > This project is currently designed for local development and validation with Docker Compose. Production deployments must configure storage, CORS, file visibility, authentication, and authorization policies separately.
 
 ## Features
 
-- **Video upload**: Direct S3-compatible upload with presigned URLs (mp4/mov/avi, up to 500 MB)
+- **Single-swing video upload**: Direct S3-compatible upload with presigned URLs (mp4/mov/avi, up to 500 MB, hard maximum 10 seconds)
 - **Pose estimation**: MediaPipe Pose 33-landmark detection with multi-frame tracking and interpolation
 - **Bat estimation**: Wrist/elbow keypoint-based bat head estimation through `WristBatEstimator`
 - **Swing classification**: Six phases: Stance -> Load -> Stride -> Rotation -> Impact -> Follow-through
@@ -133,6 +133,18 @@ VITE_API_BASE_URL=http://localhost:8000/api/v1
 | GET | `/api/v1/users/{id}/analyses` | Read analysis history |
 | GET | `/api/v1/users/{id}/trends` | Read trend data |
 
+
+## Video Input Policy
+
+MySwing is optimized for **one swing per video**, not long-session analysis.
+
+- Recommended clip length: **3-7 seconds**
+- Ideal clip length: **about 5 seconds**
+- Hard maximum duration: **10 seconds**; longer videos are rejected before the analysis task is queued
+- Long videos, multiple swings, batting practice sessions, and full game clips are not supported
+- MySwing does **not** currently detect and extract a swing from a long video
+- Trim videos outside MySwing before uploading; this task does not include an in-app trimming UI
+
 ## Analysis Pipeline
 
 ```text
@@ -184,7 +196,7 @@ The following profile data improves analysis accuracy:
 | Frame rate | 30 fps or higher, 60 fps recommended |
 | Lighting | Bright environment, at least 40 lux |
 | Framing | Full body visible from head to ankles |
-| Length | Up to 5 minutes |
+| Length | One swing per video; 3-7 seconds recommended, about 5 seconds ideal, 10 seconds hard maximum |
 | File format | MP4, MOV, AVI |
 
 > Side-view footage limits rotation analysis such as `hip_shoulder_separation`.
@@ -238,6 +250,14 @@ MySwing/
 ├── docker-compose.yml
 └── pyproject.toml
 ```
+
+
+## Known Limitations
+
+- Bat trajectory is estimated from pose landmarks (wrists/elbows), not directly detected from the physical bat.
+- Metrics are approximate and should not be treated as professional tracking-device measurements.
+- Poor framing, occlusion, low light, low FPS, or multiple people can degrade results.
+- Long-video swing extraction is not currently supported; upload a short clip containing exactly one swing.
 
 ## Development Notes
 

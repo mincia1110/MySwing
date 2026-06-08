@@ -35,7 +35,10 @@ class Settings(BaseSettings):
 
     # Video Upload Constraints
     max_file_size_bytes: int = 500 * 1024 * 1024  # 500MB
-    max_video_duration_seconds: float = 300.0  # 5 minutes
+    recommended_min_video_duration_seconds: float = 3.0
+    recommended_max_video_duration_seconds: float = 7.0
+    max_video_duration_seconds: float = 10.0
+    ideal_video_duration_seconds: float = 5.0
     min_resolution_width: int = 1280
     min_resolution_height: int = 720
     min_frame_rate: float = 30.0

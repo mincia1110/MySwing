@@ -31,12 +31,35 @@ export interface VideoMetadataResponse {
   thumbnail_url?: string | null;
 }
 
+
+export type VideoInputPolicySeverity = "ok" | "warning" | "error";
+
+export type VideoInputPolicyReason =
+  | "video_too_short"
+  | "video_longer_than_recommended"
+  | "video_too_long"
+  | "metadata_unavailable";
+
+export interface VideoInputPolicyResponse {
+  accepted: boolean;
+  severity: VideoInputPolicySeverity;
+  reason?: VideoInputPolicyReason | null;
+  duration_sec?: number | null;
+  ideal_duration_sec: number;
+  recommended_min_duration_sec: number;
+  recommended_max_duration_sec: number;
+  max_duration_sec: number;
+  message: string;
+  recommendation: string;
+}
+
 export interface VideoMetadataWithThumbnailResponse {
   file_name: string;
   duration_seconds: number;
   resolution: ResolutionResponse;
   file_size_bytes: number;
   thumbnail_url?: string | null;
+  input_validation?: VideoInputPolicyResponse | null;
 }
 
 export type QualityStatus = "pass" | "warning";

@@ -19,7 +19,7 @@ from app.db.session import async_session_factory
 from app.schemas.video import ResolutionResponse, VideoMetadataWithThumbnailResponse
 from app.services.s3_client import get_s3_client
 from app.services.thumbnail_service import generate_thumbnail_from_s3
-from app.services.video_validator import extract_metadata
+from app.services.video_validator import extract_metadata, validate_single_swing_input_policy
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,7 @@ async def get_video_metadata(
         except Exception as e:
             logger.warning("Failed to save video record for %s: %s", file_key, e)
 
+        input_validation = validate_single_swing_input_policy(metadata.duration_seconds)
         return VideoMetadataWithThumbnailResponse(
             file_name=metadata.file_name,
             duration_seconds=metadata.duration_seconds,
@@ -141,16 +142,23 @@ async def get_video_metadata(
             ),
             file_size_bytes=metadata.file_size_bytes,
             thumbnail_url=thumbnail_url,
+            input_validation=input_validation.to_dict(),
         )
 
     except ValueError as e:
+        input_validation = validate_single_swing_input_policy(None)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Cannot process video file: {e}",
+            detail={
+                "status": "metadata_unavailable",
+                "message": f"Cannot process video file: {e}",
+                "recommendation": input_validation.recommendation,
+                "input_validation": input_validation.to_dict(),
+            },
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error processing video metadata: %s", file_key)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

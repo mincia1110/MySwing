@@ -118,7 +118,7 @@ def mock_video():
     video.file_key = "uploads/test-uuid/swing.mp4"
     video.file_name = "swing.mp4"
     video.file_size_bytes = 50_000_000
-    video.duration_seconds = 10.5
+    video.duration_seconds = 5.0
     video.resolution_width = 1920
     video.resolution_height = 1080
     video.frame_rate = 60.0
@@ -150,7 +150,9 @@ class TestCreateAnalysis:
 
     @patch("app.api.analyses.analyze_swing_task")
     @patch("app.api.analyses.get_async_db")
-    def test_create_analysis_success(self, mock_get_db, mock_task, client, mock_profile, mock_video):
+    def test_create_analysis_success(
+        self, mock_get_db, mock_task, client, mock_profile, mock_video
+    ):
         """Creating analysis with valid data returns 202 with analysis_id."""
         user_id = mock_profile.user_id
 
@@ -249,6 +251,124 @@ class TestCreateAnalysis:
             assert response.status_code == 404
             body = response.json()
             assert "not found" in body["detail"].lower()
+        finally:
+            app.dependency_overrides.clear()
+
+
+    @patch("app.api.analyses.analyze_swing_task")
+    @patch("app.api.analyses.get_async_db")
+    def test_create_analysis_accepts_short_clip_with_validation_result(
+        self, mock_get_db, mock_task, client, mock_profile, mock_video
+    ):
+        """A 5 second single-swing clip is accepted and exposes input validation."""
+        mock_video.duration_seconds = 5.0
+        user_id = mock_profile.user_id
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_profile),
+                _mock_scalar_result(mock_video),
+            ]
+        )
+        mock_session.add = MagicMock()
+        mock_session.flush = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": mock_video.file_key, "user_id": str(user_id)},
+            )
+            assert response.status_code == 202
+            body = response.json()
+            assert body["status"] == "pending"
+            assert body["input_validation"]["accepted"] is True
+            assert body["input_validation"]["severity"] == "ok"
+            assert body["input_validation"]["duration_sec"] == 5.0
+            mock_task.delay.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.analyses.analyze_swing_task")
+    @patch("app.api.analyses.get_async_db")
+    def test_create_analysis_rejects_video_longer_than_10_seconds_before_queue(
+        self, mock_get_db, mock_task, client, mock_profile, mock_video
+    ):
+        """An 11 second video is rejected before the Celery task is queued."""
+        mock_video.duration_seconds = 11.0
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_profile),
+                _mock_scalar_result(mock_video),
+            ]
+        )
+        mock_session.add = MagicMock()
+        mock_session.flush = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": mock_video.file_key, "user_id": str(mock_profile.user_id)},
+            )
+            assert response.status_code == 400
+            detail = response.json()["detail"]
+            assert detail["status"] == "video_too_long"
+            assert detail["input_validation"]["accepted"] is False
+            assert detail["input_validation"]["reason"] == "video_too_long"
+            mock_session.add.assert_not_called()
+            mock_task.delay.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.analyses.analyze_swing_task")
+    @patch("app.api.analyses.get_async_db")
+    def test_create_analysis_metadata_unavailable_does_not_queue_successful_analysis(
+        self, mock_get_db, mock_task, client, mock_profile, mock_video
+    ):
+        """Missing duration metadata is rejected explicitly instead of queued."""
+        mock_video.duration_seconds = None
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_profile),
+                _mock_scalar_result(mock_video),
+            ]
+        )
+        mock_session.add = MagicMock()
+        mock_session.flush = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": mock_video.file_key, "user_id": str(mock_profile.user_id)},
+            )
+            assert response.status_code == 400
+            detail = response.json()["detail"]
+            assert detail["status"] == "metadata_unavailable"
+            assert detail["input_validation"]["reason"] == "metadata_unavailable"
+            mock_session.add.assert_not_called()
+            mock_task.delay.assert_not_called()
         finally:
             app.dependency_overrides.clear()
 
@@ -402,7 +522,13 @@ class TestGetAnalysisReport:
     @patch("app.api.analyses.get_s3_client")
     @patch("app.api.analyses.get_async_db")
     def test_get_report_success(
-        self, mock_get_db, mock_s3, client, mock_completed_analysis, mock_analysis_result, mock_video
+        self,
+        mock_get_db,
+        mock_s3,
+        client,
+        mock_completed_analysis,
+        mock_analysis_result,
+        mock_video,
     ):
         """Getting report of completed analysis returns full report data."""
         mock_analysis_result.analysis_id = mock_completed_analysis.id
