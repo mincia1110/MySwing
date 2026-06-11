@@ -474,6 +474,12 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
             preprocessing_result,
             dominant_hand="right",  # canonical RHB analysis space after optional LHB frame flip
         )
+        bat_result = _run_pose_constrained_bat_tracking(
+            analysis_id,
+            pose_result,
+            preprocessing_result,
+            bat_result,
+        )
 
         # ---- Step 3: Swing Classification ----
         swing_phases_result = _run_swing_classification(
@@ -913,6 +919,81 @@ def _run_wrist_bat_estimation(
             "method": "wrist_estimation",
             "error": str(e),
         }
+
+
+def _run_pose_constrained_bat_tracking(
+    analysis_id: str,
+    pose_result: dict[str, Any],
+    preprocessing_result: dict[str, Any],
+    wrist_bat_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Refine wrist-estimated bat trajectory with pose-constrained line tracking.
+
+    The wrist trajectory is always computed first and is passed as the prior.
+    Any missing frames, unavailable frame files, sparse line observations, or
+    OpenCV/runtime failures gracefully return the wrist result unchanged.
+    """
+    logger.info("Running pose-constrained bat tracking for analysis_id=%s", analysis_id)
+
+    frames_dir = preprocessing_result.get("frames_dir")
+    if not frames_dir:
+        return wrist_bat_result
+
+    pose_sequence_data = pose_result.get("pose_sequence", [])
+    if not pose_sequence_data:
+        return wrist_bat_result
+
+    try:
+        from app.pipeline.pose_constrained_bat_tracker import PoseConstrainedBatTracker
+
+        frames = _load_frames_from_temp_dir(frames_dir)
+        if not frames:
+            return wrist_bat_result
+
+        pose_sequence = _deserialize_pose_sequence(pose_sequence_data)
+        wrist_prior = _deserialize_bat_trajectory(
+            wrist_bat_result.get("bat_trajectory", {})
+        )
+
+        video_width = preprocessing_result.get("video_width", 1920)
+        video_height = preprocessing_result.get("video_height", 1080)
+        fps = preprocessing_result.get("fps", 30.0)
+
+        tracker = PoseConstrainedBatTracker()
+        trajectory = tracker.track(
+            frames=frames,
+            pose_sequence=pose_sequence,
+            video_width=video_width,
+            video_height=video_height,
+            fps=fps,
+            wrist_prior=wrist_prior,
+        )
+
+        if trajectory is wrist_prior or not trajectory.detections:
+            return wrist_bat_result
+
+        line_detections = sum(
+            1 for detection in trajectory.detections
+            if detection.detected and not detection.is_predicted
+        )
+        if line_detections == 0:
+            return wrist_bat_result
+
+        return {
+            "analysis_id": analysis_id,
+            "bat_trajectory": _serialize_dataclass(trajectory),
+            "status": "completed",
+            "method": "pose_constrained_bat_tracking",
+            "fallback_method": wrist_bat_result.get("method", "wrist_estimation"),
+        }
+
+    except Exception as e:
+        logger.warning(
+            "Pose-constrained bat tracking failed for analysis_id=%s: %s",
+            analysis_id,
+            str(e),
+        )
+        return wrist_bat_result
 
 
 def _run_bat_detection(
@@ -1418,7 +1499,10 @@ def _run_biomechanics_analysis(
         # distance consistently.
         video_width = 1
         video_height = 1
-        if bat_result.get("method") == "wrist_estimation":
+        if bat_result.get("method") in {
+            "wrist_estimation",
+            "pose_constrained_bat_tracking",
+        }:
             if preprocessing_result:
                 video_width = preprocessing_result.get("video_width", 1920)
                 video_height = preprocessing_result.get("video_height", 1080)
