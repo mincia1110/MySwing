@@ -25,7 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = [
-    "mediapipe>=0.10.14",
+    "mediapipe==0.10.14",
 ]
 dev = [
     "pytest>=8.3.3",
