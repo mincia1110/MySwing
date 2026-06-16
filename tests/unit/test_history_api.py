@@ -104,6 +104,40 @@ class TestGetUserAnalyses:
             app.dependency_overrides.clear()
 
     @patch("app.api.history.get_async_db")
+    def test_my_analyses_uses_current_user_header(self, mock_get_db, client):
+        """GET /me/analyses resolves the user from X-User-Id."""
+        user_id = uuid.uuid4()
+        mock_session = AsyncMock()
+
+        mock_count_result = MagicMock()
+        mock_count_result.scalar_one.return_value = 0
+
+        mock_data_result = MagicMock()
+        mock_data_result.all.return_value = []
+
+        mock_session.execute = AsyncMock(
+            side_effect=[mock_count_result, mock_data_result]
+        )
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.get(
+                "/api/v1/me/analyses",
+                headers={"X-User-Id": str(user_id)},
+            )
+            assert response.status_code == 200
+            assert response.json()["total"] == 0
+            executed_sql = str(mock_session.execute.call_args_list[0].args[0])
+            assert "analyses.user_id" in executed_sql
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.history.get_async_db")
     def test_paginated_history(self, mock_get_db, client):
         """Returns paginated results with correct metadata."""
         user_id = uuid.uuid4()
@@ -386,9 +420,21 @@ class TestGetUserTrends:
         )
 
         evaluations = [
-            {"metric_name": "bat_speed", "measured_value": 108.5, "rating": "within_range"},
-            {"metric_name": "attack_angle", "measured_value": 12.3, "rating": "above_range"},
-            {"metric_name": "hand_path_efficiency", "measured_value": 0.85, "rating": "within_range"},
+            {
+                "metric_name": "bat_speed",
+                "measured_value": 108.5,
+                "rating": "within_range",
+            },
+            {
+                "metric_name": "attack_angle",
+                "measured_value": 12.3,
+                "rating": "above_range",
+            },
+            {
+                "metric_name": "hand_path_efficiency",
+                "measured_value": 0.85,
+                "rating": "within_range",
+            },
         ]
         result1 = _make_analysis_result_row(evaluations)
         result2 = _make_analysis_result_row(evaluations)
@@ -432,9 +478,17 @@ class TestGetUserTrends:
 
         # Include invalid entries (missing metric_name, missing value)
         evaluations = [
-            {"metric_name": "bat_speed", "measured_value": 108.5, "rating": "within_range"},
+            {
+                "metric_name": "bat_speed",
+                "measured_value": 108.5,
+                "rating": "within_range",
+            },
             {"metric_name": "", "measured_value": 12.3, "rating": "within_range"},  # empty name
-            {"metric_name": "attack_angle", "measured_value": None, "rating": "within_range"},  # None value
+            {
+                "metric_name": "attack_angle",
+                "measured_value": None,
+                "rating": "within_range",
+            },  # None value
         ]
         result1 = _make_analysis_result_row(evaluations)
         result2 = _make_analysis_result_row(evaluations)

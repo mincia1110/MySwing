@@ -4,9 +4,13 @@ import uuid
 from dataclasses import dataclass
 from unittest.mock import patch
 
+import pytest
+
 from app.tasks.pipeline import (
     _apply_wrist_bat_fallback,
+    _bat_length_to_meters,
     _build_analysis_metadata,
+    _quality_check_record_values,
     _run_swing_classification,
     analyze_biomechanics_task,
     classify_swing_task,
@@ -29,6 +33,46 @@ class _DummyEstimator:
 
 def _analysis_id() -> str:
     return str(uuid.uuid4())
+
+
+def test_quality_check_record_values_maps_statuses_and_details():
+    values = _quality_check_record_values(
+        {
+            "brightness_status": "pass",
+            "framing_status": "warning",
+            "resolution_status": "pass",
+            "frame_rate_stability_status": "pass",
+            "brightness_value": 55.0,
+            "swing_arc_visibility_percent": 72.5,
+            "frame_rate_variation_percent": 2.1,
+            "warnings": ["framing warning"],
+        }
+    )
+
+    assert values == {
+        "brightness_status": "pass",
+        "framing_status": "warning",
+        "resolution_status": "pass",
+        "frame_rate_stability_status": "pass",
+        "details": {
+            "brightness_value": 55.0,
+            "swing_arc_visibility_percent": 72.5,
+            "frame_rate_variation_percent": 2.1,
+            "warnings": ["framing warning"],
+        },
+    }
+
+
+def test_bat_length_to_meters_converts_inches():
+    assert _bat_length_to_meters(34.0) == pytest.approx(0.8636)
+
+
+def test_bat_length_to_meters_converts_centimeters():
+    assert _bat_length_to_meters(84.0) == pytest.approx(0.84)
+
+
+def test_bat_length_to_meters_preserves_legacy_meter_values():
+    assert _bat_length_to_meters(0.86) == pytest.approx(0.86)
 
 
 def test_build_analysis_metadata_exposes_normalization_contract():

@@ -22,7 +22,16 @@ from app.main import app
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client for the FastAPI application."""
-    return TestClient(app)
+    mock_session = AsyncMock()
+
+    async def override_get_db():
+        yield mock_session
+
+    app.dependency_overrides[get_async_db_dep()] = override_get_db
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -93,6 +102,40 @@ class TestProfileCreation:
         assert profile.height == 175.0
         assert profile.bat_length == 34.0
         assert profile.batting_direction == "right"
+
+    @patch("app.api.profile.create_or_update_profile")
+    def test_create_my_profile_uses_current_user_header(
+        self,
+        mock_create_or_update,
+        client,
+        valid_profile_data,
+        mock_profile_row,
+    ):
+        """POST /me/profile uses X-User-Id instead of a path user id."""
+        current_user_id = uuid.uuid4()
+        mock_profile_row.user_id = current_user_id
+        mock_create_or_update.return_value = (mock_profile_row, True)
+        mock_session = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        app.dependency_overrides[get_async_db_dep()] = override_get_db
+
+        try:
+            response = client.post(
+                "/api/v1/me/profile",
+                json=valid_profile_data,
+                headers={"X-User-Id": str(current_user_id)},
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["user_id"] == str(current_user_id)
+        call_args = mock_create_or_update.call_args[0]
+        assert call_args[1] == current_user_id
 
     def test_create_profile_missing_height(self, client):
         """Missing height field returns 422 with field info (Req 2.2)."""

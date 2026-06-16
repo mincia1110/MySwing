@@ -2,8 +2,8 @@
  * API client methods for user profile endpoints (Requirements 2.1-2.8).
  *
  * Backend endpoints:
- *  - GET  /api/v1/users/{id}/profile  -> 200 with profile or 404
- *  - POST /api/v1/users/{id}/profile  -> 201 created or 200 updated
+ *  - GET  /api/v1/me/profile  -> 200 with profile or 404
+ *  - POST /api/v1/me/profile  -> 201 created or 200 updated
  */
 
 import type { AxiosInstance } from "axios";
@@ -20,13 +20,10 @@ import type {
  * distinguish missing-profile from request failure.
  */
 export async function getUserProfile(
-  userId: string,
   client: AxiosInstance = defaultClient,
 ): Promise<UserProfileResponse | null> {
   try {
-    const response = await client.get<UserProfileResponse>(
-      `/users/${encodeURIComponent(userId)}/profile`,
-    );
+    const response = await client.get<UserProfileResponse>("/me/profile");
     return response.data;
   } catch (err: unknown) {
     if (isAxiosNotFoundError(err)) {
@@ -44,14 +41,10 @@ export async function getUserProfile(
  * detail message to the user.
  */
 export async function saveUserProfile(
-  userId: string,
   data: UserProfileCreate,
   client: AxiosInstance = defaultClient,
 ): Promise<UserProfileResponse> {
-  const response = await client.post<UserProfileResponse>(
-    `/users/${encodeURIComponent(userId)}/profile`,
-    data,
-  );
+  const response = await client.post<UserProfileResponse>("/me/profile", data);
   return response.data;
 }
 

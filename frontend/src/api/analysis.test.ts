@@ -21,19 +21,17 @@ function makeFakeAxios<T>(data: T) {
 }
 
 describe("createAnalysis", () => {
-  it("posts to /analyses with file_key + user_id", async () => {
+  it("posts to /analyses with only file_key", async () => {
     const fake = makeFakeAxios({
       analysis_id: "id-1",
       status: "pending",
     });
     const result = await createAnalysis(
       "videos/abc.mp4",
-      "user-1",
-      fake as unknown as Parameters<typeof createAnalysis>[2],
+      fake as unknown as Parameters<typeof createAnalysis>[1],
     );
     expect(fake.post).toHaveBeenCalledWith("/analyses", {
       file_key: "videos/abc.mp4",
-      user_id: "user-1",
     });
     expect(result.analysis_id).toBe("id-1");
   });
@@ -112,7 +110,7 @@ describe("getAnalysisMetrics", () => {
 });
 
 describe("getUserAnalyses", () => {
-  it("issues GET /users/{id}/analyses with pagination params", async () => {
+  it("issues GET /me/analyses with pagination params", async () => {
     const fake = makeFakeAxios({
       items: [],
       total: 0,
@@ -121,27 +119,25 @@ describe("getUserAnalyses", () => {
       has_next: false,
     });
     await getUserAnalyses(
-      "u 1",
       2,
       10,
-      fake as unknown as Parameters<typeof getUserAnalyses>[3],
+      fake as unknown as Parameters<typeof getUserAnalyses>[2],
     );
-    expect(fake.get).toHaveBeenCalledWith("/users/u%201/analyses", {
+    expect(fake.get).toHaveBeenCalledWith("/me/analyses", {
       params: { page: 2, page_size: 10 },
     });
   });
 });
 
 describe("getUserTrends", () => {
-  it("issues GET /users/{id}/trends", async () => {
+  it("issues GET /me/trends", async () => {
     const fake = makeFakeAxios({
       metrics_history: {},
       total_recordings: 0,
     });
     await getUserTrends(
-      "u-1",
-      fake as unknown as Parameters<typeof getUserTrends>[1],
+      fake as unknown as Parameters<typeof getUserTrends>[0],
     );
-    expect(fake.get).toHaveBeenCalledWith("/users/u-1/trends");
+    expect(fake.get).toHaveBeenCalledWith("/me/trends");
   });
 });

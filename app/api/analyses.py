@@ -13,12 +13,14 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_current_user_id
 from app.db.models import (
     AnalysisResultTable,
     AnalysisTable,
+    QualityCheckTable,
     UserProfileTable,
     VideoTable,
 )
@@ -48,6 +50,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analyses", tags=["analyses"])
 
 
+def _quality_check_to_response(quality_check: Any) -> dict:
+    """Return API-facing quality check data from a QualityCheckTable row."""
+    if quality_check is None:
+        return {}
+    details = quality_check.details or {}
+    return {
+        "brightness_status": quality_check.brightness_status,
+        "framing_status": quality_check.framing_status,
+        "resolution_status": quality_check.resolution_status,
+        "frame_rate_stability_status": quality_check.frame_rate_stability_status,
+        "brightness_value": details.get("brightness_value"),
+        "swing_arc_visibility_percent": details.get("swing_arc_visibility_percent"),
+        "frame_rate_variation_percent": details.get("frame_rate_variation_percent"),
+        "warnings": details.get("warnings", []),
+        "checked_at": quality_check.checked_at,
+    }
+
+
 def _extract_analysis_metadata(analysis_result: Any) -> dict:
     """Extract API-facing analysis metadata from stored JSONB result data."""
     biomechanics_data = analysis_result.biomechanics_data or {}
@@ -72,6 +92,7 @@ def _extract_analysis_metadata(analysis_result: Any) -> dict:
 )
 async def create_analysis(
     request: AnalysisCreateRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     """Create a new analysis job.
@@ -82,7 +103,7 @@ async def create_analysis(
 
     Returns 202 Accepted with the analysis_id.
     """
-    user_id = UUID(request.user_id)
+    user_id = request.user_id or current_user_id
 
     # Verify user profile exists (Requirement 2.1 - profile required before analysis)
     profile_result = await db.execute(
@@ -96,9 +117,12 @@ async def create_analysis(
             "Please create a profile with height, bat_length, and batting_direction.",
         )
 
-    # Verify video exists by file_key
+    # Verify the video exists and belongs to the requesting user. The file_key is
+    # client-provided, so it must never be sufficient by itself.
     video_result = await db.execute(
-        select(VideoTable).where(VideoTable.file_key == request.file_key)
+        select(VideoTable).where(
+            VideoTable.file_key == request.file_key, VideoTable.user_id == user_id
+        )
     )
     video = video_result.scalar_one_or_none()
     if video is None:
@@ -249,7 +273,17 @@ async def get_analysis_report(
     )
     video = video_query.scalar_one_or_none()
     video_metadata = {}
+    quality_check = {}
     if video:
+        quality_query = await db.execute(
+            select(QualityCheckTable)
+            .where(QualityCheckTable.video_id == video.id)
+            .order_by(desc(QualityCheckTable.checked_at))
+        )
+        quality_check = _quality_check_to_response(
+            quality_query.scalars().first()
+        )
+
         video_metadata = {
             "file_key": video.file_key,
             "file_name": video.file_name,
@@ -389,7 +423,7 @@ async def get_analysis_report(
         created_at=analysis.created_at,
         status=analysis.status,
         video_metadata=video_metadata,
-        quality_check={},
+        quality_check=quality_check,
         analysis_metadata=_extract_analysis_metadata(analysis_result),
         swing_phases=swing_phases,
         biomechanics=biomechanics,

@@ -24,6 +24,14 @@ function makeStatus(
  */
 const POLL_INTERVAL_MS = 5;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("AnalysisStatusPolling", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -124,6 +132,63 @@ describe("AnalysisStatusPolling", () => {
     );
   });
 
+  it("retries transient polling errors before failing", async () => {
+    const fetchStatus = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary network error"))
+      .mockResolvedValueOnce(makeStatus({ status: "completed" }));
+    const onCompleted = vi.fn();
+    const onFailed = vi.fn();
+
+    render(
+      <AnalysisStatusPolling
+        analysisId="abc"
+        pollIntervalMs={POLL_INTERVAL_MS}
+        fetchStatus={fetchStatus}
+        onCompleted={onCompleted}
+        onFailed={onFailed}
+      />,
+    );
+
+    await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
+    expect(onFailed).not.toHaveBeenCalled();
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a stale response from a previous analysis id", async () => {
+    const first = deferred<AnalysisStatusResponse>();
+    const fetchStatus = vi.fn((analysisId: string) => {
+      if (analysisId === "abc") return first.promise;
+      return Promise.resolve(makeStatus({ analysis_id: analysisId, status: "completed" }));
+    });
+    const onCompleted = vi.fn();
+
+    const { rerender } = render(
+      <AnalysisStatusPolling
+        analysisId="abc"
+        pollIntervalMs={POLL_INTERVAL_MS}
+        fetchStatus={fetchStatus}
+        onCompleted={onCompleted}
+      />,
+    );
+
+    rerender(
+      <AnalysisStatusPolling
+        analysisId="def"
+        pollIntervalMs={POLL_INTERVAL_MS}
+        fetchStatus={fetchStatus}
+        onCompleted={onCompleted}
+      />,
+    );
+
+    await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
+    first.resolve(makeStatus({ analysis_id: "abc", status: "completed" }));
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 2));
+
+    expect(onCompleted).toHaveBeenCalledTimes(1);
+    expect(onCompleted.mock.calls[0][0].analysis_id).toBe("def");
+  });
+
   it("invokes onFailed when fetch raises an error", async () => {
     const fetchStatus = vi.fn().mockRejectedValue(new Error("network error"));
     const onFailed = vi.fn();
@@ -134,6 +199,7 @@ describe("AnalysisStatusPolling", () => {
         pollIntervalMs={POLL_INTERVAL_MS}
         fetchStatus={fetchStatus}
         onFailed={onFailed}
+        maxErrorRetries={0}
       />,
     );
 

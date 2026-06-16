@@ -185,6 +185,37 @@ def _build_analysis_metadata(preprocessing_result: dict | None) -> dict[str, Any
 
 
 
+def _quality_check_record_values(quality_result: dict | None) -> dict[str, Any] | None:
+    """Map serialized quality results to QualityCheckTable columns."""
+    if not quality_result:
+        return None
+    required = (
+        "brightness_status",
+        "framing_status",
+        "resolution_status",
+        "frame_rate_stability_status",
+    )
+    if not all(quality_result.get(field) for field in required):
+        return None
+
+    return {
+        "brightness_status": quality_result["brightness_status"],
+        "framing_status": quality_result["framing_status"],
+        "resolution_status": quality_result["resolution_status"],
+        "frame_rate_stability_status": quality_result["frame_rate_stability_status"],
+        "details": {
+            "brightness_value": quality_result.get("brightness_value"),
+            "swing_arc_visibility_percent": quality_result.get(
+                "swing_arc_visibility_percent"
+            ),
+            "frame_rate_variation_percent": quality_result.get(
+                "frame_rate_variation_percent"
+            ),
+            "warnings": quality_result.get("warnings", []),
+        },
+    }
+
+
 def _save_analysis_result(
     analysis_id: str,
     biomechanics_data: dict,
@@ -194,6 +225,8 @@ def _save_analysis_result(
     drill_recommendations: dict,
     overlay_video_key: str | None = None,
     processing_time_seconds: float | None = None,
+    video_id: str | None = None,
+    quality_result: dict | None = None,
 ) -> None:
     """Save analysis results to the database.
 
@@ -206,14 +239,26 @@ def _save_analysis_result(
         drill_recommendations: Drill recommendations as dict.
         overlay_video_key: S3 key for overlay video.
         processing_time_seconds: Total processing time.
+        video_id: UUID of the source video for optional quality check persistence.
+        quality_result: Serialized quality check result from preprocessing.
     """
-    from app.db.models import AnalysisResultTable
+    from app.db.models import AnalysisResultTable, QualityCheckTable
 
     session = sync_session_factory()
     try:
         existing = session.query(AnalysisResultTable).filter(
             AnalysisResultTable.analysis_id == uuid.UUID(analysis_id)
         ).first()
+
+        if video_id:
+            quality_values = _quality_check_record_values(quality_result)
+            if quality_values is not None:
+                session.add(
+                    QualityCheckTable(
+                        video_id=uuid.UUID(video_id),
+                        **quality_values,
+                    )
+                )
 
         if existing:
             existing.biomechanics_data = biomechanics_data
@@ -527,6 +572,8 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
             ),
             overlay_video_key=report_result.get("overlay_video_key"),
             processing_time_seconds=processing_time,
+            video_id=analysis_data.get("video_id"),
+            quality_result=preprocessing_result.get("quality_result"),
         )
 
         _update_analysis_status(
@@ -1331,6 +1378,23 @@ def _run_swing_classification(
         }
 
 
+def _bat_length_to_meters(raw_value: float | int | None) -> float:
+    """Convert accepted profile bat-length values to meters.
+
+    MySwing historically accepted either 24-36 inches or 61-91 centimeters in
+    one field. The analysis pipeline needs a canonical meter value to avoid
+    treating centimeter input like inches.
+    """
+    value = float(raw_value or 34.0)
+    if 24 <= value <= 36:
+        return value * 0.0254
+    if 61 <= value <= 91:
+        return value / 100.0
+    if 0 < value <= 2:
+        return value
+    raise ValueError(f"Unsupported bat_length value for analysis: {value}")
+
+
 def _run_biomechanics_analysis(
     analysis_id: str,
     pose_result: dict,
@@ -1393,9 +1457,7 @@ def _run_biomechanics_analysis(
         bat_length_meters = 0.86  # default ~34 inches
         if user_profile:
             user_height_cm = user_profile.get("height", 175.0) or 175.0
-            bat_length_raw = user_profile.get("bat_length", 34.0) or 34.0
-            # Convert bat_length from inches to meters if needed
-            bat_length_meters = bat_length_raw * 0.0254 if bat_length_raw > 2 else bat_length_raw
+            bat_length_meters = _bat_length_to_meters(user_profile.get("bat_length"))
 
         # Determine impact frame from swing phases
         phases = swing_phases_result.get("phases", {})

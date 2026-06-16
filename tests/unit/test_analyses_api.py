@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.analyses import _quality_check_to_response
 from app.main import app
 
 
@@ -136,6 +137,34 @@ def mock_profile():
     profile.bat_length = 34.0
     profile.batting_direction = "right"
     return profile
+
+
+def test_quality_check_to_response_includes_details_and_checked_at():
+    checked_at = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    row = MagicMock()
+    row.brightness_status = "pass"
+    row.framing_status = "warning"
+    row.resolution_status = "pass"
+    row.frame_rate_stability_status = "pass"
+    row.details = {
+        "brightness_value": 55.0,
+        "swing_arc_visibility_percent": 72.5,
+        "frame_rate_variation_percent": 2.1,
+        "warnings": ["framing warning"],
+    }
+    row.checked_at = checked_at
+
+    assert _quality_check_to_response(row) == {
+        "brightness_status": "pass",
+        "framing_status": "warning",
+        "resolution_status": "pass",
+        "frame_rate_stability_status": "pass",
+        "brightness_value": 55.0,
+        "swing_arc_visibility_percent": 72.5,
+        "frame_rate_variation_percent": 2.1,
+        "warnings": ["framing warning"],
+        "checked_at": checked_at,
+    }
 
 
 def _mock_scalar_result(value):
@@ -292,6 +321,97 @@ class TestCreateAnalysis:
             assert body["input_validation"]["severity"] == "ok"
             assert body["input_validation"]["duration_sec"] == 5.0
             mock_task.delay.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.analyses.analyze_swing_task")
+    @patch("app.api.analyses.get_async_db")
+    def test_create_analysis_uses_current_user_when_body_user_id_is_omitted(
+        self, mock_get_db, mock_task, client, mock_profile, mock_video
+    ):
+        """Current-user context supplies the user id for the new /me-style flow."""
+        mock_video.duration_seconds = 5.0
+        mock_video.user_id = mock_profile.user_id
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_profile),
+                _mock_scalar_result(mock_video),
+            ]
+        )
+        mock_session.add = MagicMock()
+        mock_session.flush = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": mock_video.file_key},
+                headers={"X-User-Id": str(mock_profile.user_id)},
+            )
+            assert response.status_code == 202
+            mock_task.delay.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.analyses.analyze_swing_task")
+    @patch("app.api.analyses.get_async_db")
+    def test_create_analysis_rejects_video_not_owned_by_user(
+        self, mock_get_db, mock_task, client, mock_profile, mock_video
+    ):
+        """A user cannot create an analysis for a file_key they do not own."""
+        mock_video.duration_seconds = 5.0
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_profile),
+                _mock_scalar_result(None),
+            ]
+        )
+        mock_session.add = MagicMock()
+        mock_session.flush = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": mock_video.file_key, "user_id": str(mock_profile.user_id)},
+            )
+            assert response.status_code == 404
+            assert "Video not found" in response.json()["detail"]
+            mock_session.add.assert_not_called()
+            mock_task.delay.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_create_analysis_rejects_invalid_user_id_before_db_lookup(self, client):
+        """The request schema validates user_id as a UUID and returns 422."""
+        mock_session = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": "uploads/test/video.mp4", "user_id": "not-a-uuid"},
+            )
+            assert response.status_code == 422
+            mock_session.execute.assert_not_called()
         finally:
             app.dependency_overrides.clear()
 
@@ -539,6 +659,7 @@ class TestGetAnalysisReport:
                 _mock_scalar_result(mock_completed_analysis),
                 _mock_scalar_result(mock_analysis_result),
                 _mock_scalar_result(mock_video),
+                _mock_scalar_result(None),
             ]
         )
 

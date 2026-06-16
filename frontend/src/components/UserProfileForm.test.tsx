@@ -242,7 +242,7 @@ describe("UserProfileForm", () => {
       expect(saveProfileSpy).toHaveBeenCalledTimes(1);
     });
 
-    expect(saveProfileSpy).toHaveBeenCalledWith(TEST_USER_ID, {
+    expect(saveProfileSpy).toHaveBeenCalledWith({
       height: 175,
       bat_length: 32,
       batting_direction: "left",
@@ -286,7 +286,7 @@ describe("UserProfileForm", () => {
     await user.click(screen.getByTestId("user-profile-form-submit"));
 
     await waitFor(() => {
-      expect(saveProfileSpy).toHaveBeenCalledWith(TEST_USER_ID, {
+      expect(saveProfileSpy).toHaveBeenCalledWith({
         height: 170,
         bat_length: 85,
         batting_direction: "right",

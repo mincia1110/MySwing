@@ -11,9 +11,11 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
+from app.api.dependencies import get_current_user_id
+from app.core.config import settings
 from app.db.models import VideoTable
 from app.db.session import async_session_factory
 from app.schemas.video import ResolutionResponse, VideoMetadataWithThumbnailResponse
@@ -24,9 +26,6 @@ from app.services.video_validator import extract_metadata, validate_single_swing
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/videos", tags=["videos"])
-
-# Default user ID for MVP (single-user mode)
-_DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @router.post(
@@ -41,7 +40,7 @@ _DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 )
 async def get_video_metadata(
     file_key: str,
-    user_id: str = Query(default=_DEFAULT_USER_ID, description="User ID for video ownership"),
+    current_user_id: UUID = Depends(get_current_user_id),
 ) -> VideoMetadataWithThumbnailResponse:
     """Extract metadata and generate thumbnail for an uploaded video.
 
@@ -54,11 +53,26 @@ async def get_video_metadata(
     """
     s3_client = get_s3_client()
 
-    # Verify the file exists in S3 (sync boto3 call -> offload to thread)
-    if not await asyncio.to_thread(s3_client.check_file_exists, file_key):
+    # Verify the file exists and is within the server-side size limit before
+    # downloading it for expensive metadata extraction.
+    try:
+        object_head = await asyncio.to_thread(s3_client.head_object, file_key)
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Video file not found: {file_key}",
+        )
+
+    content_length = object_head.get("ContentLength")
+    if isinstance(content_length, int) and content_length > settings.max_file_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "status": "file_too_large",
+                "message": "Uploaded video exceeds the maximum allowed size.",
+                "max_file_size_bytes": settings.max_file_size_bytes,
+                "file_size_bytes": content_length,
+            },
         )
 
     # Download video to temp file for metadata extraction
@@ -108,7 +122,7 @@ async def get_video_metadata(
                     # Determine format from file extension
                     ext = Path(file_key).suffix.lstrip(".").lower() or "mp4"
                     video_record = VideoTable(
-                        user_id=UUID(user_id),
+                        user_id=current_user_id,
                         file_key=file_key,
                         file_name=metadata.file_name,
                         file_size_bytes=metadata.file_size_bytes,
@@ -119,6 +133,11 @@ async def get_video_metadata(
                         format=ext,
                     )
                     session.add(video_record)
+                elif video_record.user_id != current_user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Video file belongs to a different user.",
+                    )
                 else:
                     # Update existing record
                     video_record.file_name = metadata.file_name
@@ -129,6 +148,8 @@ async def get_video_metadata(
                     video_record.frame_rate = metadata.frame_rate
                 await session.commit()
                 logger.info("Video record saved for file_key=%s", file_key)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning("Failed to save video record for %s: %s", file_key, e)
 

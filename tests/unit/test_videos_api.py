@@ -1,5 +1,6 @@
 """Unit tests for video metadata API input-policy responses."""
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -69,7 +70,7 @@ class TestGetVideoMetadataInputPolicy:
     ):
         """Metadata endpoint should expose the structured input policy result."""
         mock_s3 = MagicMock()
-        mock_s3.check_file_exists.return_value = True
+        mock_s3.head_object.return_value = {"ContentLength": 1024}
         mock_s3._client.download_file.return_value = None
         mock_s3._bucket = "myswing-videos"
         mock_s3.generate_presigned_download_url.return_value = "https://example.com/thumb.jpg"
@@ -82,8 +83,12 @@ class TestGetVideoMetadataInputPolicy:
         mock_session.add = MagicMock()
         mock_session.commit = AsyncMock()
         mock_session_factory.return_value = _SessionFactory(mock_session)
+        current_user_id = uuid.uuid4()
 
-        response = client.post("/api/v1/videos/uploads/test/swing.mp4/metadata")
+        response = client.post(
+            "/api/v1/videos/uploads/test/swing.mp4/metadata",
+            headers={"X-User-Id": str(current_user_id)},
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -92,6 +97,71 @@ class TestGetVideoMetadataInputPolicy:
         assert body["input_validation"]["severity"] == "warning"
         assert body["input_validation"]["reason"] == "video_longer_than_recommended"
         assert body["input_validation"]["max_duration_sec"] == 10.0
+        added_record = mock_session.add.call_args.args[0]
+        assert added_record.user_id == current_user_id
+
+    @patch("app.api.videos.generate_thumbnail_from_s3")
+    @patch("app.api.videos.extract_metadata")
+    @patch("app.api.videos.get_s3_client")
+    @patch("app.api.videos.async_session_factory")
+    def test_metadata_rejects_video_owned_by_another_user(
+        self,
+        mock_session_factory,
+        mock_get_s3_client,
+        mock_extract_metadata,
+        mock_generate_thumbnail,
+        client,
+    ):
+        """Existing video metadata cannot be updated by a different user."""
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": 1024}
+        mock_s3._client.download_file.return_value = None
+        mock_s3._bucket = "myswing-videos"
+        mock_s3.generate_presigned_download_url.return_value = "https://example.com/thumb.jpg"
+        mock_get_s3_client.return_value = mock_s3
+        mock_extract_metadata.return_value = _metadata(duration_seconds=5.0)
+        mock_generate_thumbnail.return_value = "thumbs/swing.jpg"
+
+        existing_record = MagicMock()
+        existing_record.user_id = uuid.uuid4()
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=_mock_scalar_result(existing_record))
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+        mock_session_factory.return_value = _SessionFactory(mock_session)
+
+        response = client.post(
+            "/api/v1/videos/uploads/test/swing.mp4/metadata",
+            headers={"X-User-Id": str(uuid.uuid4())},
+        )
+
+        assert response.status_code == 403
+        mock_session.add.assert_not_called()
+        mock_session.commit.assert_not_called()
+
+    @patch("app.api.videos.extract_metadata")
+    @patch("app.api.videos.get_s3_client")
+    def test_metadata_rejects_oversized_s3_object_before_download(
+        self,
+        mock_get_s3_client,
+        mock_extract_metadata,
+        client,
+    ):
+        """Oversized uploaded objects are rejected before download/metadata work."""
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": 501 * 1024 * 1024}
+        mock_s3._client.download_file.return_value = None
+        mock_s3._bucket = "myswing-videos"
+        mock_get_s3_client.return_value = mock_s3
+
+        response = client.post("/api/v1/videos/uploads/test/huge.mp4/metadata")
+
+        assert response.status_code == 413
+        detail = response.json()["detail"]
+        assert detail["status"] == "file_too_large"
+        assert detail["file_size_bytes"] == 501 * 1024 * 1024
+        mock_s3._client.download_file.assert_not_called()
+        mock_extract_metadata.assert_not_called()
 
     @patch("app.api.videos.extract_metadata")
     @patch("app.api.videos.get_s3_client")
@@ -103,7 +173,7 @@ class TestGetVideoMetadataInputPolicy:
     ):
         """Metadata extraction failures should not look like successful metadata responses."""
         mock_s3 = MagicMock()
-        mock_s3.check_file_exists.return_value = True
+        mock_s3.head_object.return_value = {"ContentLength": 1024}
         mock_s3._client.download_file.return_value = None
         mock_s3._bucket = "myswing-videos"
         mock_get_s3_client.return_value = mock_s3

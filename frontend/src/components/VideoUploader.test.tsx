@@ -188,6 +188,43 @@ describe("VideoUploader", () => {
     );
   });
 
+  it("blocks completion when server metadata validation rejects the video", async () => {
+    const rejectedMetadata: VideoMetadataWithThumbnailResponse = {
+      ...sampleMetadata,
+      input_validation: {
+        accepted: false,
+        severity: "error",
+        reason: "video_too_long",
+        duration_sec: 11,
+        ideal_duration_sec: 5,
+        recommended_min_duration_sec: 3,
+        recommended_max_duration_sec: 7,
+        max_duration_sec: 10,
+        message: "10초 이하 영상만 분석할 수 있습니다.",
+        recommendation: "영상을 잘라 다시 업로드해 주세요.",
+      },
+    };
+    vi.spyOn(apiClient, "getMetadata").mockResolvedValue(rejectedMetadata);
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    render(<VideoUploader onUploadComplete={onComplete} onUploadError={onError} />);
+
+    const input = screen.getByTestId("video-uploader-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [makeFile()] } });
+
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "10초 이하 영상만 분석할 수 있습니다." }),
+      );
+    });
+
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "10초 이하 영상만 분석할 수 있습니다.",
+    );
+  });
+
   it("surfaces presigned URL errors via onUploadError", async () => {
     vi.spyOn(apiClient, "getPresignedUrl").mockRejectedValue(
       new Error("Server unreachable"),

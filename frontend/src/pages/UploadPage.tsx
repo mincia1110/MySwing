@@ -8,9 +8,6 @@ import type { VideoMetadataWithThumbnailResponse } from "../types/video";
 
 type Step = "upload" | "profile" | "starting";
 
-// Default user ID for MVP (single-user mode)
-const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
-
 export function UploadPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -33,15 +30,17 @@ export function UploadPage() {
     if (!fileKey) return;
 
     setIsStarting(true);
+    setStep("starting");
     setError(null);
 
     try {
-      const result = await createAnalysis(fileKey, DEFAULT_USER_ID);
-      navigate(`/analyses/${result.analysis_id}?userId=${DEFAULT_USER_ID}`);
+      const result = await createAnalysis(fileKey);
+      navigate(`/analyses/${result.analysis_id}`);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : t("uploadPage.startError");
       setError(message);
+      setStep("profile");
       setIsStarting(false);
     }
   }, [fileKey, navigate, t]);
@@ -72,10 +71,7 @@ export function UploadPage() {
         <>
           <h2>{t("uploadPage.profileTitle")}</h2>
           <p>{t("uploadPage.profileIntro")}</p>
-          <UserProfileForm
-            userId={DEFAULT_USER_ID}
-            onSaved={handleProfileSaved}
-          />
+          <UserProfileForm onSaved={handleProfileSaved} />
           <div style={{ marginTop: "1rem", display: "flex", gap: "1rem" }}>
             <button
               type="button"

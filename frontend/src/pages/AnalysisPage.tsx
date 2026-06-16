@@ -2,13 +2,12 @@
  * Analysis result page.
  *
  * Drives the polling-then-report flow:
- *  1. Reads :analysisId from the route (also accepts ?userId= for trend data).
+ *  1. Reads :analysisId from the route.
  *  2. Renders <AnalysisStatusPolling /> until the job reaches a terminal state.
- *  3. On completion, fetches the full report (and trend data if userId is
- *     present) and renders <AnalysisReport />.
+ *  3. On completion, fetches the full report and current user's trend data.
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { getAnalysisReport, getUserTrends } from "../api/analysis";
 import { AnalysisReport } from "../components/AnalysisReport";
 import { AnalysisStatusPolling } from "../components/AnalysisStatusPolling";
@@ -21,9 +20,7 @@ import type {
 
 export function AnalysisPage() {
   const { analysisId } = useParams<{ analysisId: string }>();
-  const [searchParams] = useSearchParams();
   const { language, t } = useTranslation();
-  const userId = searchParams.get("userId");
 
   const [phase, setPhase] = useState<"polling" | "loading" | "ready" | "failed">(
     "polling",
@@ -37,12 +34,17 @@ export function AnalysisPage() {
       if (!analysisId) return;
       setPhase("loading");
       try {
-        const [reportData, trends] = await Promise.all([
+        const [reportResult, trendResult] = await Promise.allSettled([
           getAnalysisReport(analysisId, language),
-          userId ? getUserTrends(userId) : Promise.resolve(null),
+          getUserTrends(),
         ]);
-        setReport(reportData);
-        setTrendData(trends);
+
+        if (reportResult.status === "rejected") {
+          throw reportResult.reason;
+        }
+
+        setReport(reportResult.value);
+        setTrendData(trendResult.status === "fulfilled" ? trendResult.value : null);
         setPhase("ready");
       } catch (err) {
         setError(
@@ -51,7 +53,7 @@ export function AnalysisPage() {
         setPhase("failed");
       }
     },
-    [analysisId, userId, language, t],
+    [analysisId, language, t],
   );
 
   const handleFailed = useCallback(

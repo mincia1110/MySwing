@@ -6,8 +6,8 @@
  *  - GET  /api/v1/analyses/{id}/status           -> poll status
  *  - GET  /api/v1/analyses/{id}/report           -> full report (after completion)
  *  - GET  /api/v1/analyses/{id}/overlay          -> overlay video URL
- *  - GET  /api/v1/users/{id}/analyses            -> paginated history
- *  - GET  /api/v1/users/{id}/trends              -> trend data
+ *  - GET  /api/v1/me/analyses                    -> paginated history
+ *  - GET  /api/v1/me/trends                      -> trend data
  */
 
 import type { AxiosInstance } from "axios";
@@ -28,12 +28,10 @@ import type {
  */
 export async function createAnalysis(
   fileKey: string,
-  userId: string,
   client: AxiosInstance = defaultClient,
 ): Promise<AnalysisCreateResponse> {
   const response = await client.post<AnalysisCreateResponse>("/analyses", {
     file_key: fileKey,
-    user_id: userId,
   });
   return response.data;
 }
@@ -119,17 +117,13 @@ export async function getAnalysisMetrics(
  * Retrieve paginated analysis history for a user.
  */
 export async function getUserAnalyses(
-  userId: string,
   page = 1,
   pageSize = 20,
   client: AxiosInstance = defaultClient,
 ): Promise<AnalysisHistoryResponse> {
-  const response = await client.get<AnalysisHistoryResponse>(
-    `/users/${encodeURIComponent(userId)}/analyses`,
-    {
-      params: { page, page_size: pageSize },
-    },
-  );
+  const response = await client.get<AnalysisHistoryResponse>("/me/analyses", {
+    params: { page, page_size: pageSize },
+  });
   return response.data;
 }
 
@@ -140,11 +134,8 @@ export async function getUserAnalyses(
  * analyses; otherwise returns an empty history with a `message` field.
  */
 export async function getUserTrends(
-  userId: string,
   client: AxiosInstance = defaultClient,
 ): Promise<TrendDataResponse> {
-  const response = await client.get<TrendDataResponse>(
-    `/users/${encodeURIComponent(userId)}/trends`,
-  );
+  const response = await client.get<TrendDataResponse>("/me/trends");
   return response.data;
 }

@@ -80,6 +80,14 @@ class S3Client:
         )
         return url
 
+    def head_object(self, file_key: str) -> dict:
+        """Return S3 object metadata for a key.
+
+        Raises ClientError when the object does not exist or cannot be read.
+        """
+        response: dict = self._client.head_object(Bucket=self._bucket, Key=file_key)
+        return response
+
     def check_file_exists(self, file_key: str) -> bool:
         """Check if a file exists in the S3 bucket.
 
@@ -90,7 +98,7 @@ class S3Client:
             True if the file exists, False otherwise.
         """
         try:
-            self._client.head_object(Bucket=self._bucket, Key=file_key)
+            self.head_object(file_key)
             return True
         except ClientError:
             return False

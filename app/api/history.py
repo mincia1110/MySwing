@@ -8,10 +8,11 @@ Provides endpoints for:
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_current_user_id
 from app.db.models import AnalysisResultTable, AnalysisTable, VideoTable
 from app.db.session import get_async_db
 from app.pipeline.report_generator import MAX_TREND_RECORDINGS, MIN_RECORDINGS_FOR_TREND
@@ -24,11 +25,11 @@ from app.schemas.history import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/users", tags=["history"])
+router = APIRouter(tags=["history"])
 
 
 @router.get(
-    "/{user_id}/analyses",
+    "/users/{user_id}/analyses",
     response_model=AnalysisHistoryResponse,
     status_code=status.HTTP_200_OK,
     summary="Get user analysis history",
@@ -100,7 +101,7 @@ async def get_user_analyses(
 
 
 @router.get(
-    "/{user_id}/trends",
+    "/users/{user_id}/trends",
     response_model=TrendResponse,
     status_code=status.HTTP_200_OK,
     summary="Get user trend data",
@@ -196,3 +197,33 @@ async def get_user_trends(
         date_range_start=date_range_start,
         date_range_end=date_range_end,
     )
+
+
+@router.get(
+    "/me/analyses",
+    response_model=AnalysisHistoryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get current user's analysis history",
+)
+async def get_my_analyses(
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+) -> AnalysisHistoryResponse:
+    """Retrieve current user's paginated analysis history."""
+    return await get_user_analyses(current_user_id, page, page_size, db)
+
+
+@router.get(
+    "/me/trends",
+    response_model=TrendResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get current user's trend data",
+)
+async def get_my_trends(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+) -> TrendResponse:
+    """Retrieve current user's trend data."""
+    return await get_user_trends(current_user_id, db)

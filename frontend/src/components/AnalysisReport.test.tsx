@@ -12,7 +12,16 @@ const baseReport: AnalysisReportResponse = {
   created_at: "2025-01-15T10:30:00Z",
   status: "completed",
   video_metadata: {},
-  quality_check: {},
+  quality_check: {
+    brightness_status: "pass",
+    framing_status: "warning",
+    resolution_status: "pass",
+    frame_rate_stability_status: "pass",
+    brightness_value: 55,
+    swing_arc_visibility_percent: 72.5,
+    frame_rate_variation_percent: 2.1,
+    warnings: ["스윙 아크가 부분적으로 가려졌습니다"],
+  },
   analysis_metadata: {},
   swing_phases: [
     { phase: "stance", start_frame: 0, end_frame: 6, duration_ms: 200 },
@@ -68,6 +77,11 @@ describe("AnalysisReport", () => {
       "abc-123",
     );
     expect(screen.getByTestId("overlay-video")).toBeInTheDocument();
+    expect(screen.getByTestId("quality-check")).toBeInTheDocument();
+    expect(screen.getByTestId("quality-check-framing")).toHaveAttribute(
+      "data-status",
+      "warning",
+    );
     expect(screen.getByTestId("metrics-table")).toBeInTheDocument();
     expect(
       screen.getByTestId("metrics-table-row-bat_speed"),

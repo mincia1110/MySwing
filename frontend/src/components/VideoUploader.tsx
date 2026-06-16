@@ -279,14 +279,29 @@ export function VideoUploader({
 
       try {
         const metadata = await getMetadata(presigned.file_key);
+        const inputValidation = metadata.input_validation;
+        if (inputValidation?.accepted === false || inputValidation?.severity === "error") {
+          const error = new Error(inputValidation.message);
+          setState((prev) => ({
+            ...prev,
+            stage: "error",
+            percent: 100,
+            errorMessage: inputValidation.message,
+            metadata,
+            fileKey: presigned.file_key,
+          }));
+          onUploadError?.(error);
+          return;
+        }
+
         setState((prev) => ({
           stage: "complete",
           percent: 100,
           fileName: file.name,
           errorMessage: null,
           warningMessage:
-            metadata.input_validation?.severity === "warning"
-              ? metadata.input_validation.message
+            inputValidation?.severity === "warning"
+              ? inputValidation.message
               : prev.warningMessage,
           metadata,
           fileKey: presigned.file_key,

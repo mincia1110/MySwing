@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_current_user_id
 from app.db.session import get_async_db
 from app.schemas.user_profile import UserProfileCreate, UserProfileResponse
 from app.services.user_profile_service import (
@@ -17,11 +18,26 @@ from app.services.user_profile_service import (
     get_profile,
 )
 
-router = APIRouter(prefix="/users", tags=["profile"])
+router = APIRouter(tags=["profile"])
+
+
+def _profile_response(profile) -> UserProfileResponse:
+    return UserProfileResponse(
+        id=str(profile.id),
+        user_id=str(profile.user_id),
+        height=profile.height,
+        bat_length=profile.bat_length,
+        batting_direction=profile.batting_direction,
+        weight=profile.weight,
+        camera_direction=profile.camera_direction,
+        age_group=profile.age_group,
+        level=profile.level,
+        bat_weight=profile.bat_weight,
+    )
 
 
 @router.post(
-    "/{user_id}/profile",
+    "/users/{user_id}/profile",
     response_model=UserProfileResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create or update user profile",
@@ -65,18 +81,7 @@ async def create_or_update_user_profile(
             detail=str(e),
         )
 
-    response = UserProfileResponse(
-        id=str(profile.id),
-        user_id=str(profile.user_id),
-        height=profile.height,
-        bat_length=profile.bat_length,
-        batting_direction=profile.batting_direction,
-        weight=profile.weight,
-        camera_direction=profile.camera_direction,
-        age_group=profile.age_group,
-        level=profile.level,
-        bat_weight=profile.bat_weight,
-    )
+    response = _profile_response(profile)
 
     if not created:
         # Return 200 for updates instead of 201
@@ -91,7 +96,7 @@ async def create_or_update_user_profile(
 
 
 @router.get(
-    "/{user_id}/profile",
+    "/users/{user_id}/profile",
     response_model=UserProfileResponse,
     status_code=status.HTTP_200_OK,
     summary="Get user profile",
@@ -118,15 +123,33 @@ async def get_user_profile(
             detail=f"No profile found for user {user_id}",
         )
 
-    return UserProfileResponse(
-        id=str(profile.id),
-        user_id=str(profile.user_id),
-        height=profile.height,
-        bat_length=profile.bat_length,
-        batting_direction=profile.batting_direction,
-        weight=profile.weight,
-        camera_direction=profile.camera_direction,
-        age_group=profile.age_group,
-        level=profile.level,
-        bat_weight=profile.bat_weight,
-    )
+    return _profile_response(profile)
+
+
+@router.post(
+    "/me/profile",
+    response_model=UserProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create or update current user's profile",
+)
+async def create_or_update_my_profile(
+    profile_data: UserProfileCreate,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+) -> UserProfileResponse:
+    """Create or update the current user's profile without trusting a path ID."""
+    return await create_or_update_user_profile(current_user_id, profile_data, db)
+
+
+@router.get(
+    "/me/profile",
+    response_model=UserProfileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get current user's profile",
+)
+async def get_my_profile(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+) -> UserProfileResponse:
+    """Retrieve the current user's profile without trusting a path ID."""
+    return await get_user_profile(current_user_id, db)

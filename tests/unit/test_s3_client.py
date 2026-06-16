@@ -3,7 +3,6 @@
 import re
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -104,6 +103,21 @@ class TestPresignedUrlGeneration:
                 "Key": "uploads/abc/video.mp4",
             },
             ExpiresIn=1800,
+        )
+
+    @patch("app.services.s3_client.boto3")
+    def test_head_object_returns_metadata(self, mock_boto3: MagicMock) -> None:
+        """head_object exposes S3 object metadata for server-side validation."""
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        mock_client.head_object.return_value = {"ContentLength": 1024}
+
+        from app.services.s3_client import S3Client
+
+        client = S3Client()
+        assert client.head_object("uploads/abc/video.mp4") == {"ContentLength": 1024}
+        mock_client.head_object.assert_called_once_with(
+            Bucket="myswing-videos", Key="uploads/abc/video.mp4"
         )
 
     @patch("app.services.s3_client.boto3")

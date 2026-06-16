@@ -83,12 +83,10 @@ describe("getUserProfile", () => {
       data: SAMPLE_PROFILE,
     }));
 
-    const result = await getUserProfile(SAMPLE_PROFILE.user_id, client);
+    const result = await getUserProfile(client);
     expect(result).toEqual(SAMPLE_PROFILE);
     expect(lastRequest.method).toBe("get");
-    expect(lastRequest.url).toBe(
-      `/users/${SAMPLE_PROFILE.user_id}/profile`,
-    );
+    expect(lastRequest.url).toBe("/me/profile");
   });
 
   it("returns null on 404", async () => {
@@ -98,7 +96,7 @@ describe("getUserProfile", () => {
       throwError: true,
     }));
 
-    const result = await getUserProfile("missing-user", client);
+    const result = await getUserProfile(client);
     expect(result).toBeNull();
   });
 
@@ -110,7 +108,7 @@ describe("getUserProfile", () => {
     }));
 
     await expect(
-      getUserProfile(SAMPLE_PROFILE.user_id, client),
+      getUserProfile(client),
     ).rejects.toBeInstanceOf(AxiosError);
   });
 });
@@ -128,13 +126,11 @@ describe("saveUserProfile", () => {
       batting_direction: "right" as const,
     };
 
-    const result = await saveUserProfile(SAMPLE_PROFILE.user_id, payload, client);
+    const result = await saveUserProfile(payload, client);
 
     expect(result).toEqual(SAMPLE_PROFILE);
     expect(lastRequest.method).toBe("post");
-    expect(lastRequest.url).toBe(
-      `/users/${SAMPLE_PROFILE.user_id}/profile`,
-    );
+    expect(lastRequest.url).toBe("/me/profile");
     expect(lastRequest.data).toEqual(payload);
   });
 
@@ -147,7 +143,6 @@ describe("saveUserProfile", () => {
 
     await expect(
       saveUserProfile(
-        SAMPLE_PROFILE.user_id,
         {
           height: 999,
           bat_length: 33,

@@ -14,11 +14,11 @@
  *  - bat_weight (oz, 16-36)
  *
  * Behavior:
- *  - On mount, calls getUserProfile(userId) and pre-populates fields when
+ *  - On mount, calls getUserProfile() and pre-populates fields when
  *    a previously saved profile exists (Requirement 2.7).
  *  - Validates fields in real-time; submit is blocked while errors exist
  *    (Requirements 2.2, 2.6).
- *  - On submit, calls saveUserProfile(userId, data) (Requirement 2.8).
+ *  - On submit, calls saveUserProfile(data) (Requirement 2.8).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getUserProfile, saveUserProfile } from "../api/userProfile";
@@ -36,7 +36,8 @@ import { FormField, type FormFieldOption } from "./FormField";
 import "./UserProfileForm.css";
 
 export interface UserProfileFormProps {
-  userId: string;
+  /** @deprecated current user is resolved by the API client/backend. */
+  userId?: string;
   /** Called after a successful save with the saved profile. */
   onSaved?: (profile: UserProfileResponse) => void;
   /** Called when the initial GET or POST request fails. */
@@ -223,7 +224,6 @@ function valuesToPayload(values: FormValues): UserProfileCreate {
 }
 
 export function UserProfileForm({
-  userId,
   onSaved,
   onError,
 }: UserProfileFormProps) {
@@ -241,7 +241,7 @@ export function UserProfileForm({
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
-    getUserProfile(userId)
+    getUserProfile()
       .then((profile) => {
         if (cancelled) return;
         if (profile) {
@@ -259,7 +259,7 @@ export function UserProfileForm({
     return () => {
       cancelled = true;
     };
-  }, [userId, onError]);
+  }, [onError]);
 
   // Real-time validation: errors recompute on every change.
   const errors = useMemo(() => validateProfileForm(values, t), [values, t]);
@@ -325,7 +325,7 @@ export function UserProfileForm({
       setIsSubmitting(true);
       try {
         const payload = valuesToPayload(values);
-        const saved = await saveUserProfile(userId, payload);
+        const saved = await saveUserProfile(payload);
         setSubmitSuccess(true);
         onSaved?.(saved);
       } catch (err: unknown) {
@@ -337,7 +337,7 @@ export function UserProfileForm({
         setIsSubmitting(false);
       }
     },
-    [values, userId, onSaved, onError, t],
+    [values, onSaved, onError, t],
   );
 
   const showError = (field: keyof FormValues): string | null =>

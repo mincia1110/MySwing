@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +11,10 @@ class AnalysisCreateRequest(BaseModel):
     """Request schema for creating a new analysis job."""
 
     file_key: str = Field(..., description="S3 object key of the uploaded video")
-    user_id: str = Field(..., description="User ID to associate with the analysis")
+    user_id: Optional[UUID] = Field(
+        default=None,
+        description="Deprecated: current user is resolved from the request context.",
+    )
 
 
 class VideoInputPolicyResponse(BaseModel):

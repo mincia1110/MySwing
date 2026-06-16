@@ -1,7 +1,7 @@
 """Unit tests for Celery pipeline orchestration (Task 14.3).
 
 Verifies:
-- Status transitions (pending → preprocessing → analyzing → evaluating → generating_report → completed)
+- Status transitions through the full analysis lifecycle
 - Error handling (failed status set with error_message)
 - Graceful degradation behavior (partial failure produces partial results)
 - Retry logic (max 2 retries with exponential backoff)
@@ -11,7 +11,6 @@ Requirements: 6.9, 6.10, 8.1
 """
 
 import uuid
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,7 +69,7 @@ class TestStatusTransitions:
     def test_successful_pipeline_transitions_through_all_statuses(
         self, mock_update_status, mock_get_data, mock_save_result, mock_analysis_data
     ):
-        """Pipeline should transition: preprocessing → analyzing → evaluating → generating_report → completed."""
+        """Pipeline should transition through the full analysis lifecycle."""
         mock_get_data.return_value = mock_analysis_data
         analysis_id = mock_analysis_data["analysis_id"]
 
@@ -209,7 +208,7 @@ class TestErrorHandling:
         mock_preprocess.side_effect = ConnectionError(error_msg)
         analysis_id = mock_analysis_data["analysis_id"]
 
-        result = analyze_swing_task.apply(args=[analysis_id]).get()
+        analyze_swing_task.apply(args=[analysis_id]).get()
 
         # Verify the error message was passed to _update_analysis_status
         failed_calls = [
@@ -239,7 +238,8 @@ class TestErrorHandling:
         result = analyze_swing_task.apply(args=[analysis_id]).get()
 
         assert result["status"] == STATUS_FAILED
-        assert "video file key" in result["error_message"].lower() or "no video" in result["error_message"].lower()
+        error_message = result["error_message"].lower()
+        assert "video file key" in error_message or "no video" in error_message
 
 
 class TestGracefulDegradation:
@@ -368,7 +368,7 @@ class TestTimeoutHandling:
     def test_soft_timeout_sets_failed_status(
         self, mock_update_status, mock_get_data, mock_analysis_data
     ):
-        """When SoftTimeLimitExceeded is raised, status should be set to failed with timeout message."""
+        """SoftTimeLimitExceeded should set failed status with timeout message."""
         from celery.exceptions import SoftTimeLimitExceeded
 
         mock_get_data.return_value = mock_analysis_data
@@ -408,6 +408,49 @@ class TestPreprocessingStep:
         assert result["video_file_key"] == "videos/test.mp4"
         assert result["frames_extracted"] is True
         assert result["status"] == "completed"
+
+
+    @patch("app.tasks.pipeline._run_preprocessing")
+    @patch("app.tasks.pipeline._save_analysis_result")
+    @patch("app.tasks.pipeline._get_analysis_data")
+    @patch("app.tasks.pipeline._update_analysis_status")
+    def test_quality_result_passed_to_save_result(
+        self,
+        mock_update_status,
+        mock_get_data,
+        mock_save_result,
+        mock_preprocess,
+        mock_analysis_data,
+    ):
+        """Completed pipeline persists preprocessing quality-result payload."""
+        quality_result = {
+            "brightness_status": "warning",
+            "framing_status": "pass",
+            "resolution_status": "pass",
+            "frame_rate_stability_status": "pass",
+            "brightness_value": 12.0,
+            "swing_arc_visibility_percent": 91.0,
+            "frame_rate_variation_percent": 1.2,
+            "warnings": ["조명이 부족합니다"],
+        }
+        mock_get_data.return_value = mock_analysis_data
+        mock_preprocess.return_value = {
+            "analysis_id": mock_analysis_data["analysis_id"],
+            "video_file_key": mock_analysis_data["video_file_key"],
+            "frames_extracted": True,
+            "fps": 30.0,
+            "frame_count": 0,
+            "video_width": 1920,
+            "video_height": 1080,
+            "quality_result": quality_result,
+            "status": "completed",
+        }
+
+        analyze_swing_task.apply(args=[mock_analysis_data["analysis_id"]]).get()
+
+        call_kwargs = mock_save_result.call_args[1]
+        assert call_kwargs["video_id"] == mock_analysis_data["video_id"]
+        assert call_kwargs["quality_result"] == quality_result
 
 
 class TestUpdateAnalysisStatus:
@@ -507,3 +550,5 @@ class TestProcessingTimeTracking:
         call_kwargs = mock_save_result.call_args[1]
         assert "processing_time_seconds" in call_kwargs
         assert call_kwargs["processing_time_seconds"] >= 0
+        assert call_kwargs["video_id"] == mock_analysis_data["video_id"]
+        assert "quality_result" in call_kwargs

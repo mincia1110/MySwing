@@ -15,12 +15,14 @@
  * "minimum recordings" message (Requirement 8.8).
  */
 import type { AnalysisReportResponse, TrendDataResponse } from "../types/analysis";
+import type { QualityCheckResponse } from "../types/video";
 import { useTranslation } from "../i18n";
 import { ComparisonView } from "./ComparisonView";
 import { DrillRecommendationCard } from "./DrillRecommendationCard";
 import { ImprovementAreasList } from "./ImprovementAreasList";
 import { MetricsTable } from "./MetricsTable";
 import { OverlayVideoPlayer } from "./OverlayVideoPlayer";
+import { QualityCheckResult } from "./QualityCheckResult";
 import { TrendChart } from "./TrendChart";
 import "./AnalysisReport.css";
 
@@ -28,6 +30,25 @@ export interface AnalysisReportProps {
   report: AnalysisReportResponse;
   /** Optional trend data fetched separately via getUserTrends. */
   trendData?: TrendDataResponse | null;
+}
+
+function isQualityStatus(value: unknown): value is QualityCheckResponse["brightness_status"] {
+  return value === "pass" || value === "warning";
+}
+
+function isQualityCheckResponse(value: unknown): value is QualityCheckResponse {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    isQualityStatus(candidate.brightness_status) &&
+    isQualityStatus(candidate.framing_status) &&
+    isQualityStatus(candidate.resolution_status) &&
+    isQualityStatus(candidate.frame_rate_stability_status) &&
+    typeof candidate.brightness_value === "number" &&
+    typeof candidate.swing_arc_visibility_percent === "number" &&
+    typeof candidate.frame_rate_variation_percent === "number" &&
+    Array.isArray(candidate.warnings)
+  );
 }
 
 function formatCreatedAt(iso: string): string {
@@ -56,6 +77,10 @@ export function AnalysisReport({ report, trendData }: AnalysisReportProps) {
       </header>
 
       <OverlayVideoPlayer videoUrl={report.overlay_video_url} />
+
+      {isQualityCheckResponse(report.quality_check) ? (
+        <QualityCheckResult result={report.quality_check} />
+      ) : null}
 
       <MetricsTable metrics={report.metric_evaluations} />
 

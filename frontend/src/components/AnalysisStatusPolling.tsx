@@ -27,8 +27,10 @@ export interface AnalysisStatusPollingProps {
   pollIntervalMs?: number;
   /** Called once when status === "completed". */
   onCompleted?: (status: AnalysisStatusResponse) => void;
-  /** Called once when status === "failed" or polling errors out. */
+  /** Called once when status === "failed" or polling errors exceed retry budget. */
   onFailed?: (status: AnalysisStatusResponse | null, error?: Error) => void;
+  /** Number of transient polling errors to retry before failing. Defaults to 3. */
+  maxErrorRetries?: number;
   /**
    * Optional override of the API call. Used for testing without mocking
    * axios; defaults to `getAnalysisStatus`.
@@ -50,31 +52,39 @@ export function AnalysisStatusPolling({
   pollIntervalMs = 2000,
   onCompleted,
   onFailed,
+  maxErrorRetries = 3,
   fetchStatus = getAnalysisStatus,
 }: AnalysisStatusPollingProps) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<AnalysisStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Refs guard against firing callbacks after unmount or twice.
-  const cancelledRef = useRef(false);
+  // Refs guard against firing terminal callbacks twice within the active job.
   const completedNotifiedRef = useRef(false);
   const failedNotifiedRef = useRef(false);
 
   useEffect(() => {
-    cancelledRef.current = false;
     completedNotifiedRef.current = false;
     failedNotifiedRef.current = false;
 
+    let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveErrors = 0;
+
+    const scheduleNextPoll = (): void => {
+      timer = setTimeout(() => {
+        void poll();
+      }, pollIntervalMs);
+    };
 
     const poll = async (): Promise<void> => {
-      if (cancelledRef.current) return;
+      if (cancelled) return;
 
       try {
         const next = await fetchStatus(analysisId);
-        if (cancelledRef.current) return;
+        if (cancelled) return;
 
+        consecutiveErrors = 0;
         setStatus(next);
         setError(null);
 
@@ -94,13 +104,16 @@ export function AnalysisStatusPolling({
         }
 
         // Schedule the next poll for non-terminal status.
-        timer = setTimeout(() => {
-          void poll();
-        }, pollIntervalMs);
+        scheduleNextPoll();
       } catch (err) {
-        if (cancelledRef.current) return;
+        if (cancelled) return;
         const e = err instanceof Error ? err : new Error("Status poll failed");
+        consecutiveErrors += 1;
         setError(e.message);
+        if (consecutiveErrors <= maxErrorRetries) {
+          scheduleNextPoll();
+          return;
+        }
         if (!failedNotifiedRef.current) {
           failedNotifiedRef.current = true;
           onFailed?.(null, e);
@@ -111,12 +124,12 @@ export function AnalysisStatusPolling({
     void poll();
 
     return () => {
-      cancelledRef.current = true;
+      cancelled = true;
       if (timer !== null) {
         clearTimeout(timer);
       }
     };
-  }, [analysisId, pollIntervalMs, onCompleted, onFailed, fetchStatus]);
+  }, [analysisId, pollIntervalMs, onCompleted, onFailed, maxErrorRetries, fetchStatus]);
 
   const currentStatus: AnalysisStatus = status?.status ?? "pending";
   const percent = progressPercent(currentStatus);
