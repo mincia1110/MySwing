@@ -41,6 +41,16 @@ BAT_SPEED_PRECISION_KMH = 1.0
 # Number of frames around impact to use for speed calculation
 IMPACT_FRAME_WINDOW = 2
 
+# Wrist/elbow-based bat estimation tracks a proxy for the barrel. In practice
+# this underestimates true barrel speed, so apply a calibrated multiplier only
+# for predicted wrist-derived trajectories.
+WRIST_PROXY_BARREL_SPEED_MULTIPLIER = 1.7
+
+# Upper guardrail for selecting an impact metric frame. Values above this are
+# usually pose identity swaps or wrist-estimator jumps rather than real barrel
+# speed. 160 km/h is above typical elite MLB swing speeds.
+MAX_PLAUSIBLE_BAT_SPEED_KMH = 160.0
+
 # Launch angle and attack angle precision (±0.5°)
 ANGLE_PRECISION_DEGREES = 0.5
 
@@ -327,6 +337,7 @@ class BatSpeedCalculator:
         impact_frame: int,
         pixel_to_meter: float,
         fps: float,
+        barrel_speed_multiplier: float = 1.0,
     ) -> BatSpeedResult:
         """Calculate bat speed at the impact zone.
 
@@ -340,6 +351,8 @@ class BatSpeedCalculator:
             impact_frame: Frame index of the impact moment.
             pixel_to_meter: Calibrated pixel-to-meter ratio.
             fps: Video frame rate (frames per second).
+            barrel_speed_multiplier: Optional multiplier for proxy trajectories
+                that systematically under-estimate true barrel speed.
 
         Returns:
             BatSpeedResult with speed in km/h, precision, and measurement frame.
@@ -352,6 +365,9 @@ class BatSpeedCalculator:
 
         if fps <= 0:
             raise CalibrationError("FPS must be positive.")
+
+        if barrel_speed_multiplier <= 0:
+            raise CalibrationError("Barrel speed multiplier must be positive.")
 
         # Get detections around impact frame (±IMPACT_FRAME_WINDOW frames)
         window_start = impact_frame - IMPACT_FRAME_WINDOW
@@ -401,7 +417,7 @@ class BatSpeedCalculator:
         speed_m_s = displacement_per_frame * pixel_to_meter * fps
 
         # Convert to km/h
-        speed_kmh = speed_m_s * 3.6
+        speed_kmh = speed_m_s * 3.6 * barrel_speed_multiplier
 
         return BatSpeedResult(
             speed_kmh=speed_kmh,
@@ -1299,8 +1315,13 @@ class BiomechanicsOrchestrator:
                     frame,
                     pixel_to_meter,
                     fps,
+                    barrel_speed_multiplier=self._bat_speed_multiplier(
+                        bat_trajectory
+                    ),
                 )
             except CalibrationError:
+                continue
+            if speed.speed_kmh > MAX_PLAUSIBLE_BAT_SPEED_KMH:
                 continue
             if speed.speed_kmh > best_speed:
                 best_speed = speed.speed_kmh
@@ -1326,6 +1347,48 @@ class BiomechanicsOrchestrator:
                 impact_frame=angle.impact_frame,
             )
         return angle
+
+    @staticmethod
+    def _bat_speed_multiplier(bat_trajectory: BatTrajectory) -> float:
+        """Return speed multiplier for proxy bat trajectories."""
+        detected = [d for d in bat_trajectory.detections if d.detected]
+        if not detected:
+            return 1.0
+
+        predicted_count = sum(1 for d in detected if d.is_predicted)
+        if predicted_count / len(detected) >= 0.8:
+            return WRIST_PROXY_BARREL_SPEED_MULTIPLIER
+        return 1.0
+
+    @staticmethod
+    def _calibrate_from_bat_length(
+        bat_trajectory: BatTrajectory,
+        bat_length_meters: float,
+    ) -> float | None:
+        """Estimate coordinate-to-meter scale from known bat length.
+
+        Wrist-based trajectories store the configured bat length in the same
+        coordinate space as the estimated bat head. This gives a better scale
+        than body height when portrait or zoomed clips cut off the lower body.
+        """
+        if bat_length_meters <= 0:
+            return None
+
+        lengths = [
+            float(d.length_pixels)
+            for d in bat_trajectory.detections
+            if d.detected
+            and d.length_pixels > 0
+            and (d.is_predicted or d.coordinate_space == "normalized")
+        ]
+        if not lengths:
+            return None
+
+        median_length = statistics.median(lengths)
+        if median_length <= 0:
+            return None
+
+        return bat_length_meters / median_length
 
     def analyze(
         self,
@@ -1431,6 +1494,14 @@ class BiomechanicsOrchestrator:
                     )
                 )
 
+        if pixel_to_meter is not None:
+            bat_length_scale = self._calibrate_from_bat_length(
+                bat_trajectory,
+                bat_length_meters,
+            )
+            if bat_length_scale is not None:
+                pixel_to_meter = max(pixel_to_meter, bat_length_scale)
+
         metric_impact_frame = impact_frame
         if pixel_to_meter is not None:
             metric_impact_frame = self._select_impact_metric_frame(
@@ -1449,7 +1520,13 @@ class BiomechanicsOrchestrator:
         if pixel_to_meter is not None:
             try:
                 result.bat_speed = self._bat_speed_calculator.calculate_bat_speed(
-                    bat_trajectory, metric_impact_frame, pixel_to_meter, fps
+                    bat_trajectory,
+                    metric_impact_frame,
+                    pixel_to_meter,
+                    fps,
+                    barrel_speed_multiplier=self._bat_speed_multiplier(
+                        bat_trajectory
+                    ),
                 )
             except CalibrationError as e:
                 reason = self._classify_bat_speed_reason(str(e))

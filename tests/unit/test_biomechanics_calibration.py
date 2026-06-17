@@ -13,18 +13,15 @@ import math
 import pytest
 
 from app.models.bat import BatDetectionResult, BatTrajectory
-from app.models.biomechanics import BatSpeedResult
 from app.models.pose import Keypoint, PoseResult
 from app.pipeline.biomechanics_analyzer import (
     BAT_LENGTH_DISCREPANCY_THRESHOLD,
     BAT_SPEED_PRECISION_KMH,
-    IMPACT_FRAME_WINDOW,
     BatSpeedCalculator,
     BiomechanicsOrchestrator,
     CalibrationError,
     PixelCalibrator,
 )
-
 
 # --- Helper functions ---
 
@@ -450,6 +447,28 @@ class TestBatSpeedCalculator:
 
         # 10 px/frame * 0.01 m/px * 100 fps = 10 m/s = 36 km/h
         assert abs(result.speed_kmh - 36.0) < BAT_SPEED_PRECISION_KMH
+
+    def test_barrel_speed_multiplier_applies_to_proxy_trajectories(self):
+        """Optional multiplier should scale proxy bat-head speeds."""
+        calculator = BatSpeedCalculator()
+        detections = [
+            _make_detection(8, position=(100.0, 200.0), bat_head_position=(50.0, 100.0)),
+            _make_detection(9, position=(100.0, 200.0), bat_head_position=(60.0, 100.0)),
+            _make_detection(10, position=(100.0, 200.0), bat_head_position=(70.0, 100.0)),
+            _make_detection(11, position=(100.0, 200.0), bat_head_position=(80.0, 100.0)),
+            _make_detection(12, position=(100.0, 200.0), bat_head_position=(90.0, 100.0)),
+        ]
+        trajectory = BatTrajectory(detections=detections)
+
+        result = calculator.calculate_bat_speed(
+            trajectory,
+            impact_frame=10,
+            pixel_to_meter=0.01,
+            fps=100.0,
+            barrel_speed_multiplier=1.7,
+        )
+
+        assert abs(result.speed_kmh - 61.2) < BAT_SPEED_PRECISION_KMH
 
     def test_speed_unit_conversion_m_s_to_kmh(self):
         """Verify correct m/s to km/h conversion (×3.6)."""

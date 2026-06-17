@@ -12,6 +12,7 @@ from app.models.bat import BatDetectionResult, BatTrajectory
 from app.models.pose import Keypoint, PoseResult
 from app.pipeline.biomechanics_analyzer import (
     BIOMECHANICS_TIMEOUT_SECONDS,
+    WRIST_PROXY_BARREL_SPEED_MULTIPLIER,
     BiomechanicsOrchestrator,
 )
 
@@ -57,6 +58,9 @@ def _make_bat_detection(
     x: float,
     y: float,
     detected: bool = True,
+    *,
+    length_pixels: float = 100.0,
+    is_predicted: bool = False,
 ) -> BatDetectionResult:
     """Create a BatDetectionResult."""
     return BatDetectionResult(
@@ -64,9 +68,9 @@ def _make_bat_detection(
         detected=detected,
         position=(x, y),
         orientation_angle=0.0,
-        length_pixels=100.0,
+        length_pixels=length_pixels,
         confidence=0.9,
-        is_predicted=False,
+        is_predicted=is_predicted,
     )
 
 
@@ -205,6 +209,39 @@ class TestBiomechanicsOrchestratorSuccess:
 
         assert result.attack_angle is not None
         assert result.attack_angle.angle_degrees == pytest.approx(18.43, abs=0.1)
+
+    def test_predicted_wrist_trajectory_uses_bat_length_scale_and_multiplier(self):
+        """Wrist-derived bat proxy uses bat length scale and barrel multiplier."""
+        orchestrator = BiomechanicsOrchestrator()
+        pose_sequence = _make_pose_sequence(20)
+        detections = []
+        for frame in range(8, 13):
+            offset = frame - 8
+            detections.append(
+                _make_bat_detection(
+                    frame,
+                    x=0.1 + offset * 0.01,
+                    y=0.2,
+                    length_pixels=0.25,
+                    is_predicted=True,
+                )
+            )
+        bat_trajectory = BatTrajectory(detections=detections)
+
+        result = orchestrator.analyze(
+            pose_sequence=pose_sequence,
+            bat_trajectory=bat_trajectory,
+            user_height_cm=180.0,
+            bat_length_meters=0.85,
+            impact_frame=10,
+            swing_phases=_default_swing_phases(),
+            fps=30.0,
+        )
+
+        assert result.bat_speed is not None
+        expected = 0.01 * (0.85 / 0.25) * 30.0 * 3.6
+        expected *= WRIST_PROXY_BARREL_SPEED_MULTIPLIER
+        assert result.bat_speed.speed_kmh == pytest.approx(expected, abs=0.1)
 
 
 class TestBiomechanicsOrchestratorPartialFailure:

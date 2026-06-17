@@ -150,6 +150,7 @@ def test_tracking_result_uses_normalized_coordinate_space() -> None:
     assert result.detections[0].coordinate_space == "normalized"
     assert 0.0 <= result.detections[0].position[0] <= 1.0
     assert 0.0 <= result.detections[0].position[1] <= 1.0
+    assert result.detections[0].length_pixels < 1.0
 
 
 def test_tracking_accuracy_is_clamped_to_unit_interval() -> None:

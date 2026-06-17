@@ -16,9 +16,7 @@ from app.models.enums import QualityStatus
 from app.models.video import QualityCheckResult
 from app.services.quality_checker import (
     BRIGHTNESS_LUX_THRESHOLD,
-    BRIGHTNESS_PIXEL_TO_LUX_FACTOR,
     FRAME_RATE_VARIATION_THRESHOLD,
-    MIN_RESOLUTION_HEIGHT_QUALITY,
     VideoQualityChecker,
 )
 
@@ -201,6 +199,41 @@ class TestFrameRateStability:
         status, variation = checker._check_frame_rate_stability("/nonexistent/video.mp4")
         assert status == QualityStatus.WARNING
         assert variation == 100.0
+
+
+class TestMultiplePersonDetection:
+    """Tests for subject ambiguity warnings."""
+
+    def test_multiple_people_across_sampled_frames_adds_warning(
+        self, checker, bright_video, monkeypatch
+    ):
+        """Repeated multi-person detections should warn about ambiguous subject selection."""
+        calls = {"count": 0}
+
+        def fake_detect_people(_frame):
+            calls["count"] += 1
+            return 2 if calls["count"] <= 2 else 1
+
+        monkeypatch.setattr(checker, "_detect_people_in_frame", fake_detect_people)
+
+        result = checker.check_quality(bright_video)
+
+        assert any("여러 사람" in warning for warning in result.warnings)
+        assert any("타자 1명" in warning for warning in result.warnings)
+
+    def test_single_person_frames_do_not_add_subject_warning(
+        self, checker, bright_video, monkeypatch
+    ):
+        """Single-person detections should not produce the ambiguity warning."""
+        monkeypatch.setattr(checker, "_detect_people_in_frame", lambda _frame: 1)
+
+        result = checker.check_quality(bright_video)
+
+        assert not any("여러 사람" in warning for warning in result.warnings)
+
+    def test_empty_frames_are_not_ambiguous(self, checker):
+        """No sampled frames should not be reported as multiple people."""
+        assert checker._has_multiple_people([]) is False
 
 
 class TestCombinedQualityCheck:

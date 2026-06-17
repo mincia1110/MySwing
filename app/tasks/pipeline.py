@@ -1026,6 +1026,22 @@ def _run_pose_constrained_bat_tracking(
         if line_detections == 0:
             return wrist_bat_result
 
+        line_peak_speed = _trajectory_peak_speed(trajectory)
+        wrist_peak_speed = _trajectory_peak_speed(wrist_prior)
+        if (
+            wrist_peak_speed > 0.0
+            and line_peak_speed > 0.0
+            and line_peak_speed < wrist_peak_speed * 0.95
+        ):
+            logger.info(
+                "Rejecting pose-constrained bat tracking for analysis_id=%s: "
+                "line peak speed %.4f does not preserve wrist prior %.4f",
+                analysis_id,
+                line_peak_speed,
+                wrist_peak_speed,
+            )
+            return wrist_bat_result
+
         return {
             "analysis_id": analysis_id,
             "bat_trajectory": _serialize_dataclass(trajectory),
@@ -1041,6 +1057,26 @@ def _run_pose_constrained_bat_tracking(
             str(e),
         )
         return wrist_bat_result
+
+
+def _trajectory_peak_speed(bat_trajectory: Any) -> float:
+    """Return the strongest available per-frame bat motion signal."""
+    speeds = getattr(bat_trajectory, "bat_speed_pixels_per_frame", None)
+    if speeds:
+        return max(float(speed) for speed in speeds)
+
+    detections = sorted(
+        [d for d in getattr(bat_trajectory, "detections", []) if _detection_detected(d)],
+        key=_detection_frame_index,
+    )
+    peak = 0.0
+    for previous, current in zip(detections, detections[1:]):
+        prev_point = _get_bat_detection_point(previous)
+        curr_point = _get_bat_detection_point(current)
+        distance = math.hypot(curr_point[0] - prev_point[0], curr_point[1] - prev_point[1])
+        frame_span = max(1, _detection_frame_index(current) - _detection_frame_index(previous))
+        peak = max(peak, distance / frame_span)
+    return peak
 
 
 def _run_bat_detection(

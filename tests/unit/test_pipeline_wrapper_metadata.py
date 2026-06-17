@@ -4,14 +4,18 @@ import uuid
 from dataclasses import dataclass
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
+from app.models.bat import BatDetectionResult, BatTrajectory
 from app.tasks.pipeline import (
     _apply_wrist_bat_fallback,
     _bat_length_to_meters,
     _build_analysis_metadata,
     _quality_check_record_values,
+    _run_pose_constrained_bat_tracking,
     _run_swing_classification,
+    _trajectory_peak_speed,
     analyze_biomechanics_task,
     classify_swing_task,
     evaluate_swing_task,
@@ -197,6 +201,90 @@ def test_apply_wrist_bat_fallback_passes_explicit_dominant_hand(monkeypatch):
 
     assert captured["dominant_hand"] == "right"
     assert result["method"] == "wrist_estimation"
+
+
+def test_trajectory_peak_speed_prefers_bat_head_motion():
+    trajectory = BatTrajectory(
+        detections=[
+            BatDetectionResult(
+                frame_index=0,
+                detected=True,
+                position=(0.0, 0.0),
+                orientation_angle=0.0,
+                length_pixels=0.25,
+                confidence=0.9,
+                is_predicted=True,
+                coordinate_space="normalized",
+                bat_head_position=(0.0, 0.0),
+            ),
+            BatDetectionResult(
+                frame_index=2,
+                detected=True,
+                position=(0.1, 0.0),
+                orientation_angle=0.0,
+                length_pixels=0.25,
+                confidence=0.9,
+                is_predicted=True,
+                coordinate_space="normalized",
+                bat_head_position=(0.4, 0.0),
+            ),
+        ]
+    )
+
+    assert _trajectory_peak_speed(trajectory) == pytest.approx(0.2)
+
+
+def test_pose_constrained_tracking_falls_back_when_line_motion_collapses(monkeypatch):
+    analysis_id = _analysis_id()
+    wrist_prior = BatTrajectory(
+        detections=[],
+        bat_speed_pixels_per_frame=[0.10, 0.20],
+    )
+    slow_line_trajectory = BatTrajectory(
+        detections=[
+            BatDetectionResult(
+                frame_index=0,
+                detected=True,
+                position=(0.0, 0.0),
+                orientation_angle=0.0,
+                length_pixels=0.25,
+                confidence=0.9,
+                is_predicted=False,
+                coordinate_space="normalized",
+            )
+        ],
+        bat_speed_pixels_per_frame=[0.03],
+        tracking_accuracy=1.0,
+    )
+    wrist_result = {
+        "analysis_id": analysis_id,
+        "bat_trajectory": {"detections": []},
+        "status": "completed",
+        "method": "wrist_estimation",
+    }
+
+    monkeypatch.setattr(
+        "app.tasks.pipeline._load_frames_from_temp_dir",
+        lambda _frames_dir: [np.zeros((8, 8, 3), dtype=np.uint8)],
+    )
+    monkeypatch.setattr("app.tasks.pipeline._deserialize_pose_sequence", lambda _data: [])
+    monkeypatch.setattr(
+        "app.tasks.pipeline._deserialize_bat_trajectory",
+        lambda _data: wrist_prior,
+    )
+    monkeypatch.setattr(
+        "app.pipeline.pose_constrained_bat_tracker.PoseConstrainedBatTracker.track",
+        lambda *args, **kwargs: slow_line_trajectory,
+    )
+
+    result = _run_pose_constrained_bat_tracking(
+        analysis_id,
+        {"pose_sequence": [{"frame_index": 0, "keypoints": []}]},
+        {"frames_dir": "/tmp/frames", "video_width": 8, "video_height": 8, "fps": 30.0},
+        wrist_result,
+    )
+
+    assert result is wrist_result
 
 
 def test_run_swing_classification_uses_batting_direction_param():

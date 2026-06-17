@@ -547,12 +547,13 @@ class PoseConstrainedBatTracker:
         return None
 
     def _detection_from_candidate(self, candidate: BatLineCandidate) -> BatDetectionResult:
+        length_normalized = self._distance(candidate.p1, candidate.p2)
         return BatDetectionResult(
             frame_index=candidate.frame_index,
             detected=True,
             position=candidate.center,
             orientation_angle=candidate.angle_deg,
-            length_pixels=candidate.length_px,
+            length_pixels=length_normalized,
             confidence=candidate.observation_score,
             is_predicted=False,
             coordinate_space="normalized",

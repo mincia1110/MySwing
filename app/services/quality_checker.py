@@ -25,6 +25,11 @@ MIN_RESOLUTION_HEIGHT_QUALITY: int = 720
 FRAME_RATE_VARIATION_THRESHOLD: float = 10.0
 TARGET_FPS: float = 30.0
 FRAME_SAMPLE_INTERVAL: int = 10  # Sample every 10th frame
+PERSON_DETECTION_SAMPLE_LIMIT: int = 24
+MULTIPLE_PERSON_FRAME_RATIO_THRESHOLD: float = 0.20
+MULTIPLE_PERSON_MIN_FRAMES: int = 2
+MULTIPLE_PERSON_RAW_CANDIDATE_MIN_FRAMES: int = 3
+PERSON_COLUMN_GROUPING_RATIO: float = 0.15
 
 
 class VideoQualityChecker:
@@ -96,6 +101,12 @@ class VideoQualityChecker:
             if frame_rate_status == QualityStatus.WARNING:
                 warnings.append(
                     "프레임레이트가 불안정합니다. 재촬영을 권장합니다."
+                )
+
+            if self._has_multiple_people(frames):
+                warnings.append(
+                    "프레임 안에 여러 사람이 감지되어 분석 대상이 모호할 수 있습니다. "
+                    "타자 1명만 전신이 보이는 사이드뷰로 재촬영을 권장합니다."
                 )
 
         finally:
@@ -345,6 +356,133 @@ class VideoQualityChecker:
             return QualityStatus.PASS
         else:
             return QualityStatus.WARNING
+
+    def _has_multiple_people(self, frames: list[np.ndarray]) -> bool:
+        """Detect whether sampled frames likely contain more than one person.
+
+        The swing pipeline assumes a single visible batter. When multiple people
+        are present, pose estimation can switch subjects between frames and make
+        the overlay unusable, so this is surfaced as a quality warning.
+        """
+        if not frames:
+            return False
+
+        if len(frames) <= PERSON_DETECTION_SAMPLE_LIMIT:
+            sampled_frames = frames
+        else:
+            sample_indices = np.linspace(
+                0,
+                len(frames) - 1,
+                PERSON_DETECTION_SAMPLE_LIMIT,
+                dtype=int,
+            )
+            sampled_frames = [frames[index] for index in sample_indices]
+
+        multi_person_frames = 0
+        raw_multi_candidate_frames = 0
+
+        for frame in sampled_frames:
+            if self._detect_people_in_frame(frame) >= 2:
+                multi_person_frames += 1
+            elif self._detect_person_candidate_count(frame) >= 2:
+                raw_multi_candidate_frames += 1
+
+        if multi_person_frames >= MULTIPLE_PERSON_MIN_FRAMES:
+            return True
+
+        if raw_multi_candidate_frames >= MULTIPLE_PERSON_RAW_CANDIDATE_MIN_FRAMES:
+            return True
+
+        frame_ratio = multi_person_frames / len(sampled_frames)
+        return frame_ratio >= MULTIPLE_PERSON_FRAME_RATIO_THRESHOLD
+
+    def _detect_people_in_frame(self, frame: np.ndarray) -> int:
+        """Return the number of person-like regions in a frame."""
+        rect_list, frame_width = self._detect_person_rects(frame)
+        if not rect_list:
+            return 0
+
+        return self._count_distinct_person_columns(rect_list, frame_width)
+
+    def _detect_person_candidate_count(self, frame: np.ndarray) -> int:
+        """Return the raw count of person-like detector rectangles."""
+        rect_list, _frame_width = self._detect_person_rects(frame)
+        return len(rect_list)
+
+    def _detect_person_rects(self, frame: np.ndarray) -> tuple[list[list[int]], int]:
+        """Return non-max-suppressed person detector rectangles."""
+        frame_height, frame_width = frame.shape[:2]
+        scale = 1.0
+        if frame_width > 640:
+            scale = 640.0 / frame_width
+            resized = cv2.resize(
+                frame,
+                (640, max(1, int(frame_height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            resized = frame
+
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        rects, weights = hog.detectMultiScale(
+            resized,
+            winStride=(8, 8),
+            padding=(16, 16),
+            scale=1.05,
+            hitThreshold=-0.5,
+        )
+        if len(rects) == 0:
+            return [], frame_width
+
+        rect_list = []
+        for x, y, w, h in rects:
+            if scale != 1.0:
+                x = int(x / scale)
+                y = int(y / scale)
+                w = int(w / scale)
+                h = int(h / scale)
+            rect_list.append([x, y, w, h])
+
+        indices = cv2.dnn.NMSBoxes(
+            rect_list,
+            [float(weight) for weight in weights],
+            score_threshold=0.3,
+            nms_threshold=0.4,
+        )
+        if len(indices) == 0:
+            return [], frame_width
+
+        selected_rects = [rect_list[int(index)] for index in np.array(indices).flatten()]
+        return selected_rects, frame_width
+
+    def _count_distinct_person_columns(
+        self,
+        rects: list[list[int]],
+        frame_width: int,
+    ) -> int:
+        """Count spatially distinct people from detector rectangles.
+
+        HOG can split one batter into separate upper/lower-body rectangles.
+        Rectangles whose horizontal centers are close are treated as the same
+        person, which reduces false positives for single-player side views.
+        """
+        if not rects:
+            return 0
+
+        center_threshold = max(1.0, frame_width * PERSON_COLUMN_GROUPING_RATIO)
+        centers = sorted(x + w / 2.0 for x, _y, w, _h in rects)
+        groups = 1
+        group_center = centers[0]
+
+        for center in centers[1:]:
+            if abs(center - group_center) > center_threshold:
+                groups += 1
+                group_center = center
+            else:
+                group_center = (group_center + center) / 2.0
+
+        return groups
 
     def _check_frame_rate_stability(
         self, video_path: str
