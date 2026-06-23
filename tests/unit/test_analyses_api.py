@@ -30,6 +30,10 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+def _user_headers(user_id: uuid.UUID) -> dict[str, str]:
+    return {"X-User-Id": str(user_id)}
+
+
 @pytest.fixture
 def mock_analysis():
     """Create a mock analysis record."""
@@ -210,11 +214,13 @@ class TestCreateAnalysis:
                     "file_key": mock_video.file_key,
                     "user_id": str(user_id),
                 },
+                headers={"X-User-Id": str(user_id)},
             )
             assert response.status_code == 202
             body = response.json()
             assert "analysis_id" in body
             assert body["status"] == "pending"
+            mock_session.commit.assert_awaited_once()
             mock_task.delay.assert_called_once()
         finally:
             app.dependency_overrides.clear()
@@ -242,6 +248,7 @@ class TestCreateAnalysis:
                     "file_key": "uploads/test/video.mp4",
                     "user_id": str(user_id),
                 },
+                headers={"X-User-Id": str(user_id)},
             )
             assert response.status_code == 400
             body = response.json()
@@ -276,6 +283,7 @@ class TestCreateAnalysis:
                     "file_key": "uploads/nonexistent/video.mp4",
                     "user_id": str(user_id),
                 },
+                headers={"X-User-Id": str(user_id)},
             )
             assert response.status_code == 404
             body = response.json()
@@ -313,6 +321,7 @@ class TestCreateAnalysis:
             response = client.post(
                 "/api/v1/analyses",
                 json={"file_key": mock_video.file_key, "user_id": str(user_id)},
+                headers={"X-User-Id": str(user_id)},
             )
             assert response.status_code == 202
             body = response.json()
@@ -362,6 +371,34 @@ class TestCreateAnalysis:
 
     @patch("app.api.analyses.analyze_swing_task")
     @patch("app.api.analyses.get_async_db")
+    def test_create_analysis_rejects_body_user_id_mismatch(
+        self, mock_get_db, mock_task, client
+    ):
+        """Deprecated body user_id cannot target a different user."""
+        current_user_id = uuid.uuid4()
+        other_user_id = uuid.uuid4()
+        mock_session = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": "uploads/test/video.mp4", "user_id": str(other_user_id)},
+                headers={"X-User-Id": str(current_user_id)},
+            )
+            assert response.status_code == 403
+            mock_session.execute.assert_not_called()
+            mock_task.delay.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.analyses.analyze_swing_task")
+    @patch("app.api.analyses.get_async_db")
     def test_create_analysis_rejects_video_not_owned_by_user(
         self, mock_get_db, mock_task, client, mock_profile, mock_video
     ):
@@ -388,6 +425,7 @@ class TestCreateAnalysis:
             response = client.post(
                 "/api/v1/analyses",
                 json={"file_key": mock_video.file_key, "user_id": str(mock_profile.user_id)},
+                headers={"X-User-Id": str(mock_profile.user_id)},
             )
             assert response.status_code == 404
             assert "Video not found" in response.json()["detail"]
@@ -443,6 +481,7 @@ class TestCreateAnalysis:
             response = client.post(
                 "/api/v1/analyses",
                 json={"file_key": mock_video.file_key, "user_id": str(mock_profile.user_id)},
+                headers={"X-User-Id": str(mock_profile.user_id)},
             )
             assert response.status_code == 400
             detail = response.json()["detail"]
@@ -482,6 +521,7 @@ class TestCreateAnalysis:
             response = client.post(
                 "/api/v1/analyses",
                 json={"file_key": mock_video.file_key, "user_id": str(mock_profile.user_id)},
+                headers={"X-User-Id": str(mock_profile.user_id)},
             )
             assert response.status_code == 400
             detail = response.json()["detail"]
@@ -527,7 +567,10 @@ class TestGetAnalysisStatus:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/analyses/{mock_analysis.id}/status")
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/status",
+                headers=_user_headers(mock_analysis.user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["analysis_id"] == str(mock_analysis.id)
@@ -554,11 +597,38 @@ class TestGetAnalysisStatus:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/analyses/{mock_analysis.id}/status")
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/status",
+                headers=_user_headers(mock_analysis.user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["status"] == "analyzing"
             assert body["started_at"] is not None
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.analyses.get_async_db")
+    def test_get_status_rejects_other_user(self, mock_get_db, client, mock_analysis):
+        """Analysis id alone cannot expose another user's analysis."""
+        other_user_id = uuid.uuid4()
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            return_value=_mock_scalar_result(mock_analysis)
+        )
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/status",
+                headers=_user_headers(other_user_id),
+            )
+            assert response.status_code == 403
         finally:
             app.dependency_overrides.clear()
 
@@ -580,7 +650,10 @@ class TestGetAnalysisStatus:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/analyses/{mock_analysis.id}/status")
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/status",
+                headers=_user_headers(mock_analysis.user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["status"] == "failed"
@@ -604,7 +677,10 @@ class TestGetAnalysisStatus:
 
         try:
             analysis_id = uuid.uuid4()
-            response = client.get(f"/api/v1/analyses/{analysis_id}/status")
+            response = client.get(
+                f"/api/v1/analyses/{analysis_id}/status",
+                headers=_user_headers(uuid.uuid4()),
+            )
             assert response.status_code == 404
         finally:
             app.dependency_overrides.clear()
@@ -625,7 +701,8 @@ class TestGetAnalysisStatus:
 
         try:
             response = client.get(
-                f"/api/v1/analyses/{mock_completed_analysis.id}/status"
+                f"/api/v1/analyses/{mock_completed_analysis.id}/status",
+                headers=_user_headers(mock_completed_analysis.user_id),
             )
             assert response.status_code == 200
             body = response.json()
@@ -677,7 +754,8 @@ class TestGetAnalysisReport:
 
         try:
             response = client.get(
-                f"/api/v1/analyses/{mock_completed_analysis.id}/report"
+                f"/api/v1/analyses/{mock_completed_analysis.id}/report",
+                headers=_user_headers(mock_completed_analysis.user_id),
             )
             assert response.status_code == 200
             body = response.json()
@@ -706,7 +784,10 @@ class TestGetAnalysisReport:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/analyses/{mock_analysis.id}/report")
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/report",
+                headers=_user_headers(mock_analysis.user_id),
+            )
             assert response.status_code == 409
             body = response.json()
             assert "not yet completed" in body["detail"]
@@ -729,7 +810,10 @@ class TestGetAnalysisReport:
 
         try:
             analysis_id = uuid.uuid4()
-            response = client.get(f"/api/v1/analyses/{analysis_id}/report")
+            response = client.get(
+                f"/api/v1/analyses/{analysis_id}/report",
+                headers=_user_headers(uuid.uuid4()),
+            )
             assert response.status_code == 404
         finally:
             app.dependency_overrides.clear()
@@ -766,7 +850,8 @@ class TestGetAnalysisOverlay:
 
         try:
             response = client.get(
-                f"/api/v1/analyses/{mock_completed_analysis.id}/overlay"
+                f"/api/v1/analyses/{mock_completed_analysis.id}/overlay",
+                headers=_user_headers(mock_completed_analysis.user_id),
             )
             assert response.status_code == 200
             body = response.json()
@@ -792,7 +877,10 @@ class TestGetAnalysisOverlay:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/analyses/{mock_analysis.id}/overlay")
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/overlay",
+                headers=_user_headers(mock_analysis.user_id),
+            )
             assert response.status_code == 409
         finally:
             app.dependency_overrides.clear()
@@ -819,7 +907,8 @@ class TestGetAnalysisOverlay:
 
         try:
             response = client.get(
-                f"/api/v1/analyses/{mock_completed_analysis.id}/overlay"
+                f"/api/v1/analyses/{mock_completed_analysis.id}/overlay",
+                headers=_user_headers(mock_completed_analysis.user_id),
             )
             assert response.status_code == 404
             body = response.json()
@@ -852,7 +941,8 @@ class TestGetAnalysisMetrics:
 
         try:
             response = client.get(
-                f"/api/v1/analyses/{mock_completed_analysis.id}/metrics"
+                f"/api/v1/analyses/{mock_completed_analysis.id}/metrics",
+                headers=_user_headers(mock_completed_analysis.user_id),
             )
             assert response.status_code == 200
             body = response.json()
@@ -882,7 +972,10 @@ class TestGetAnalysisMetrics:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/analyses/{mock_analysis.id}/metrics")
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/metrics",
+                headers=_user_headers(mock_analysis.user_id),
+            )
             assert response.status_code == 409
         finally:
             app.dependency_overrides.clear()
@@ -903,7 +996,10 @@ class TestGetAnalysisMetrics:
 
         try:
             analysis_id = uuid.uuid4()
-            response = client.get(f"/api/v1/analyses/{analysis_id}/metrics")
+            response = client.get(
+                f"/api/v1/analyses/{analysis_id}/metrics",
+                headers=_user_headers(uuid.uuid4()),
+            )
             assert response.status_code == 404
         finally:
             app.dependency_overrides.clear()
@@ -929,6 +1025,7 @@ class TestStatusTransitions:
         """All valid status values are correctly returned by the status endpoint."""
         mock_analysis = MagicMock()
         mock_analysis.id = uuid.uuid4()
+        mock_analysis.user_id = uuid.uuid4()
         mock_analysis.status = status_value
         mock_analysis.error_message = "Error" if status_value == "failed" else None
         mock_analysis.started_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -951,7 +1048,10 @@ class TestStatusTransitions:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/analyses/{mock_analysis.id}/status")
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/status",
+                headers=_user_headers(mock_analysis.user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["status"] == status_value

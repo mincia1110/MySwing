@@ -210,7 +210,7 @@ class TestAnalysisCreateRequest:
     def test_valid_request(self):
         req = AnalysisCreateRequest(
             file_key="uploads/abc123.mp4",
-            user_id="user-001",
+            user_id="00000000-0000-4000-8000-000000000001",
         )
         assert req.file_key == "uploads/abc123.mp4"
 

@@ -8,7 +8,7 @@ Provides endpoints for:
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["history"])
 
 
+def _ensure_user_scope(user_id: UUID, current_user_id: UUID) -> None:
+    if user_id != current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requested user_id does not match the authenticated user.",
+        )
+
+
 @router.get(
     "/users/{user_id}/analyses",
     response_model=AnalysisHistoryResponse,
@@ -43,12 +51,15 @@ async def get_user_analyses(
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
     db: AsyncSession = Depends(get_async_db),
+    current_user_id: UUID = Depends(get_current_user_id),
 ) -> AnalysisHistoryResponse:
     """Retrieve paginated analysis history for a user.
 
     Returns analyses ordered by creation date descending (most recent first).
     Includes video file name and processing time when available.
     """
+    _ensure_user_scope(user_id, current_user_id)
+
     offset = (page - 1) * page_size
 
     # Count total analyses for this user
@@ -114,6 +125,7 @@ async def get_user_analyses(
 async def get_user_trends(
     user_id: UUID,
     db: AsyncSession = Depends(get_async_db),
+    current_user_id: UUID = Depends(get_current_user_id),
 ) -> TrendResponse:
     """Retrieve trend data for a user's swing metrics over time.
 
@@ -123,6 +135,8 @@ async def get_user_trends(
     Requirements 8.8: If user has < 2 completed analyses, omit trend data and
     display a message indicating the minimum number of recordings required.
     """
+    _ensure_user_scope(user_id, current_user_id)
+
     # Fetch completed analyses with results, ordered by creation date
     stmt = (
         select(AnalysisTable, AnalysisResultTable)
@@ -212,7 +226,9 @@ async def get_my_analyses(
     db: AsyncSession = Depends(get_async_db),
 ) -> AnalysisHistoryResponse:
     """Retrieve current user's paginated analysis history."""
-    return await get_user_analyses(current_user_id, page, page_size, db)
+    return await get_user_analyses(
+        current_user_id, page, page_size, db, current_user_id=current_user_id
+    )
 
 
 @router.get(
@@ -226,4 +242,4 @@ async def get_my_trends(
     db: AsyncSession = Depends(get_async_db),
 ) -> TrendResponse:
     """Retrieve current user's trend data."""
-    return await get_user_trends(current_user_id, db)
+    return await get_user_trends(current_user_id, db, current_user_id=current_user_id)

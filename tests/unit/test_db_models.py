@@ -5,9 +5,7 @@ without requiring a running database.
 """
 
 import uuid
-from datetime import datetime, timezone
 
-import pytest
 from sqlalchemy import inspect
 
 from app.db.models import (
@@ -163,6 +161,11 @@ class TestVideoTable:
         fk = list(user_id_col.foreign_keys)[0]
         assert str(fk.column) == "users.id"
 
+    def test_file_key_index(self):
+        table = VideoTable.__table__
+        index_names = {index.name for index in table.indexes}
+        assert "ix_videos_file_key" in index_names
+
     def test_instance_creation(self):
         video = VideoTable(
             id=uuid.uuid4(),
@@ -222,6 +225,12 @@ class TestAnalysisTable:
         assert table.c.error_message.nullable is True
         assert table.c.started_at.nullable is True
         assert table.c.completed_at.nullable is True
+
+    def test_hot_path_indexes(self):
+        table = AnalysisTable.__table__
+        index_names = {index.name for index in table.indexes}
+        assert "ix_analyses_user_id_created_at" in index_names
+        assert "ix_analyses_status" in index_names
 
 
 class TestAnalysisResultTable:

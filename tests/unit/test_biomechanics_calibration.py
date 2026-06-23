@@ -355,13 +355,27 @@ class TestPixelCalibratorVerifyWithBat:
         with pytest.raises(CalibrationError, match="zero or negative"):
             calibrator.verify_with_bat(bat_detection, 0.75, 0.005)
 
-    def test_non_pixel_coordinate_space_raises_error(self):
-        """Normalized-coordinate bat detections are not valid for pixel-length verification."""
+    def test_normalized_coordinate_space_is_allowed(self):
+        """Normalized-coordinate bat detections verify against normalized calibration."""
         calibrator = PixelCalibrator()
         bat_detection = _make_detection(0, length_pixels=0.25, coordinate_space="normalized")
+        coordinate_to_meter = 3.0
+        bat_length_actual = 0.75
 
-        with pytest.raises(CalibrationError, match="requires pixel coordinate space"):
-            calibrator.verify_with_bat(bat_detection, 0.75, 0.005)
+        is_valid, discrepancy = calibrator.verify_with_bat(
+            bat_detection, bat_length_actual, coordinate_to_meter
+        )
+
+        assert is_valid is True
+        assert discrepancy == pytest.approx(0.0)
+
+    def test_unknown_coordinate_space_raises_error(self):
+        """Unknown coordinate spaces are rejected."""
+        calibrator = PixelCalibrator()
+        bat_detection = _make_detection(0, length_pixels=0.25, coordinate_space="world")
+
+        with pytest.raises(CalibrationError, match="requires pixel or normalized"):
+            calibrator.verify_with_bat(bat_detection, 0.75, 3.0)
 
 
 class TestImpactMetricFrameSelection:

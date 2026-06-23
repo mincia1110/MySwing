@@ -299,6 +299,13 @@ class TestClassifyPhases:
         }
         assert "stride" in result["phase_durations_ms"]
         assert "rotation" in result["phase_durations_ms"]
+        transition_by_target = {
+            transition["to_phase"]: transition
+            for transition in result["transitions"]
+        }
+        for phase_name in ["load", "stride", "rotation", "impact", "follow_through"]:
+            transition_frame = transition_by_target[phase_name]["frame_index"]
+            assert transition_frame == result["phases"][phase_name][0]
 
     def test_speed_fallback_keeps_phase_ranges_monotonic_when_peak_is_early(self):
         """Speed fallback should not create inverted impact ranges for early peaks."""

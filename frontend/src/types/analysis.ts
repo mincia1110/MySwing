@@ -130,6 +130,7 @@ export interface BiomechanicsResponse {
   cog_sway_cm: number | null;
   cog_drop_cm: number | null;
   head_stability_cm: number | null;
+  front_knee_extension_degrees: number | null;
   front_knee_flexion_degrees: number | null;
   spine_angle_degrees: number | null;
   processing_time_seconds: number | null;

@@ -790,36 +790,36 @@ DRILL_DATABASE: Dict[str, Dict[str, List[Dict[str, str]]]] = {
             },
         ],
     },
-    "front_knee_flexion_degrees": {
+    "front_knee_extension_degrees": {
         "below": [
             {
-                "drill_name": "로우 포지션 홀드 드릴",
+                "drill_name": "프론트 레그 브레이스 드릴",
                 "description": (
-                    "임팩트 직전 앞무릎 굴곡을 유지하도록 정지 동작을 반복해 "
-                    "스트라이드 착지 시 굴곡을 확보한다."
+                    "임팩트 구간에서 앞다리가 안정적으로 펴지며 버틸 수 있도록 "
+                    "앞발 착지 후 회전을 멈춰 확인한다."
                 ),
             },
             {
-                "drill_name": "싱글 레그 스쿼트",
+                "drill_name": "스텝 앤 브레이스 드릴",
                 "description": (
-                    "한 발 스쿼트로 앞발 지지를 강화해 임팩트 시 무릎 굴곡을 "
-                    "증가시킨다."
+                    "짧은 스트라이드 후 앞무릎이 무너지지 않게 고정하고 "
+                    "골반 회전을 연결한다."
                 ),
             },
         ],
         "above": [
             {
-                "drill_name": "업라이트 포지션 리프트 드릴",
+                "drill_name": "무릎 과신전 체크 드릴",
                 "description": (
-                    "앞무릎이 과도하게 굽혀지지 않도록 상체를 살짝 일으키며 "
-                    "스트라이드 길이를 조정하는 드릴이다."
+                    "앞무릎이 잠기거나 뒤로 꺾이는 느낌이 생기지 않도록 "
+                    "착지 각도와 체중 이동을 점검한다."
                 ),
             },
             {
-                "drill_name": "스트라이드 길이 컨트롤",
+                "drill_name": "소프트 브레이스 드릴",
                 "description": (
-                    "스트라이드 거리를 점진적으로 줄여 임팩트 시 앞무릎 "
-                    "굴곡이 과도해지지 않도록 조절한다."
+                    "앞다리를 펴되 완전히 잠그지 않고 지면 반력을 받을 수 "
+                    "있는 범위에서 반복한다."
                 ),
             },
         ],
@@ -873,7 +873,7 @@ PROTECTED_DIRECTIONAL_METRICS: frozenset[str] = frozenset(
         "cog_sway_cm",
         "cog_drop_cm",
         "head_stability_cm",
-        "front_knee_flexion_degrees",
+        "front_knee_extension_degrees",
         "spine_angle_degrees",
     }
 )
@@ -991,7 +991,8 @@ class DrillRecommender:
             "cog_sway_cm": "무게중심 좌우 흔들림",
             "cog_drop_cm": "무게중심 수직 하강",
             "head_stability_cm": "머리 안정성",
-            "front_knee_flexion_degrees": "앞무릎 굴곡",
+            "front_knee_extension_degrees": "앞무릎 신전",
+            "front_knee_flexion_degrees": "앞무릎 신전",
             "spine_angle_degrees": "척추 경사각",
         }
         if metric_name in labels:

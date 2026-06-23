@@ -21,6 +21,10 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+def _user_headers(user_id: uuid.UUID) -> dict[str, str]:
+    return {"X-User-Id": str(user_id)}
+
+
 def _make_analysis_row(
     user_id: uuid.UUID,
     status: str = "completed",
@@ -92,7 +96,10 @@ class TestGetUserAnalyses:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/analyses")
+            response = client.get(
+                f"/api/v1/users/{user_id}/analyses",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["items"] == []
@@ -100,6 +107,29 @@ class TestGetUserAnalyses:
             assert body["page"] == 1
             assert body["page_size"] == 20
             assert body["has_next"] is False
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.history.get_async_db")
+    def test_user_analysis_history_rejects_other_user(self, mock_get_db, client):
+        """Path user_id must match the authenticated user."""
+        target_user_id = uuid.uuid4()
+        current_user_id = uuid.uuid4()
+        mock_session = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.get(
+                f"/api/v1/users/{target_user_id}/analyses",
+                headers=_user_headers(current_user_id),
+            )
+            assert response.status_code == 403
+            mock_session.execute.assert_not_called()
         finally:
             app.dependency_overrides.clear()
 
@@ -167,7 +197,8 @@ class TestGetUserAnalyses:
 
         try:
             response = client.get(
-                f"/api/v1/users/{user_id}/analyses?page=1&page_size=10"
+                f"/api/v1/users/{user_id}/analyses?page=1&page_size=10",
+                headers=_user_headers(user_id),
             )
             assert response.status_code == 200
             body = response.json()
@@ -210,7 +241,10 @@ class TestGetUserAnalyses:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/analyses")
+            response = client.get(
+                f"/api/v1/users/{user_id}/analyses",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["has_next"] is False
@@ -231,7 +265,10 @@ class TestGetUserAnalyses:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/analyses?page=0")
+            response = client.get(
+                f"/api/v1/users/{user_id}/analyses?page=0",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 422
         finally:
             app.dependency_overrides.clear()
@@ -250,7 +287,10 @@ class TestGetUserAnalyses:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/analyses?page_size=101")
+            response = client.get(
+                f"/api/v1/users/{user_id}/analyses?page_size=101",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 422
         finally:
             app.dependency_overrides.clear()
@@ -282,7 +322,10 @@ class TestGetUserAnalyses:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/analyses")
+            response = client.get(
+                f"/api/v1/users/{user_id}/analyses",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert len(body["items"]) == 1
@@ -294,6 +337,29 @@ class TestGetUserAnalyses:
 
 class TestGetUserTrends:
     """Tests for GET /api/v1/users/{user_id}/trends."""
+
+    @patch("app.api.history.get_async_db")
+    def test_user_trends_rejects_other_user(self, mock_get_db, client):
+        """Trend path user_id must match the authenticated user."""
+        target_user_id = uuid.uuid4()
+        current_user_id = uuid.uuid4()
+        mock_session = AsyncMock()
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.get(
+                f"/api/v1/users/{target_user_id}/trends",
+                headers=_user_headers(current_user_id),
+            )
+            assert response.status_code == 403
+            mock_session.execute.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
 
     @patch("app.api.history.get_async_db")
     def test_no_recordings_returns_message(self, mock_get_db, client):
@@ -312,7 +378,10 @@ class TestGetUserTrends:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/trends")
+            response = client.get(
+                f"/api/v1/users/{user_id}/trends",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["total_recordings"] == 0
@@ -341,7 +410,10 @@ class TestGetUserTrends:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/trends")
+            response = client.get(
+                f"/api/v1/users/{user_id}/trends",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["total_recordings"] == 1
@@ -387,7 +459,10 @@ class TestGetUserTrends:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/trends")
+            response = client.get(
+                f"/api/v1/users/{user_id}/trends",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert body["total_recordings"] == 2
@@ -451,7 +526,10 @@ class TestGetUserTrends:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/trends")
+            response = client.get(
+                f"/api/v1/users/{user_id}/trends",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             assert "bat_speed" in body["metrics_history"]
@@ -505,7 +583,10 @@ class TestGetUserTrends:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/trends")
+            response = client.get(
+                f"/api/v1/users/{user_id}/trends",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             # Only bat_speed should be present (empty name and None value skipped)
@@ -553,7 +634,10 @@ class TestGetUserTrends:
         app.dependency_overrides[get_async_db] = override_get_db
 
         try:
-            response = client.get(f"/api/v1/users/{user_id}/trends")
+            response = client.get(
+                f"/api/v1/users/{user_id}/trends",
+                headers=_user_headers(user_id),
+            )
             assert response.status_code == 200
             body = response.json()
             points = body["metrics_history"]["bat_speed"]

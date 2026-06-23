@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -26,6 +26,24 @@ from app.services.video_validator import extract_metadata, validate_single_swing
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/videos", tags=["videos"])
+
+
+def _validate_upload_file_key(file_key: str) -> None:
+    """Reject object keys outside the upload namespace or with traversal."""
+    path = PurePosixPath(file_key)
+    parts = path.parts
+    if (
+        not file_key
+        or file_key.startswith("/")
+        or "\\" in file_key
+        or ".." in parts
+        or len(parts) < 3
+        or parts[0] != "uploads"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid upload file_key.",
+        )
 
 
 @router.post(
@@ -51,6 +69,7 @@ async def get_video_metadata(
 
     Must respond within 5 seconds per Requirement 1.7.
     """
+    _validate_upload_file_key(file_key)
     s3_client = get_s3_client()
 
     # Verify the file exists and is within the server-side size limit before
@@ -74,6 +93,20 @@ async def get_video_metadata(
                 "file_size_bytes": content_length,
             },
         )
+
+    # Existing metadata records are authoritative for ownership. Check before
+    # downloading or processing the object.
+    factory = async_session_factory()
+    async with factory() as session:
+        existing = await session.execute(
+            select(VideoTable).where(VideoTable.file_key == file_key)
+        )
+        video_record = existing.scalar_one_or_none()
+        if video_record is not None and video_record.user_id != current_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Video file belongs to a different user.",
+            )
 
     # Download video to temp file for metadata extraction
     video_path = Path(file_key)

@@ -136,8 +136,23 @@ class TestGetVideoMetadataInputPolicy:
         )
 
         assert response.status_code == 403
+        mock_s3._client.download_file.assert_not_called()
+        mock_extract_metadata.assert_not_called()
+        mock_generate_thumbnail.assert_not_called()
         mock_session.add.assert_not_called()
         mock_session.commit.assert_not_called()
+
+    @patch("app.api.videos.get_s3_client")
+    def test_metadata_rejects_invalid_file_key_before_s3(
+        self,
+        mock_get_s3_client,
+        client,
+    ):
+        """Metadata extraction only accepts keys under the uploads namespace."""
+        response = client.post("/api/v1/videos/private/test.mp4/metadata")
+
+        assert response.status_code == 400
+        mock_get_s3_client.assert_not_called()
 
     @patch("app.api.videos.extract_metadata")
     @patch("app.api.videos.get_s3_client")
@@ -163,12 +178,14 @@ class TestGetVideoMetadataInputPolicy:
         mock_s3._client.download_file.assert_not_called()
         mock_extract_metadata.assert_not_called()
 
+    @patch("app.api.videos.async_session_factory")
     @patch("app.api.videos.extract_metadata")
     @patch("app.api.videos.get_s3_client")
     def test_metadata_unavailable_returns_structured_error(
         self,
         mock_get_s3_client,
         mock_extract_metadata,
+        mock_session_factory,
         client,
     ):
         """Metadata extraction failures should not look like successful metadata responses."""
@@ -178,6 +195,9 @@ class TestGetVideoMetadataInputPolicy:
         mock_s3._bucket = "myswing-videos"
         mock_get_s3_client.return_value = mock_s3
         mock_extract_metadata.side_effect = ValueError("Cannot open video file")
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=_mock_scalar_result(None))
+        mock_session_factory.return_value = _SessionFactory(mock_session)
 
         response = client.post("/api/v1/videos/uploads/test/broken.mp4/metadata")
 

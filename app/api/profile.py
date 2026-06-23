@@ -21,6 +21,14 @@ from app.services.user_profile_service import (
 router = APIRouter(tags=["profile"])
 
 
+def _ensure_user_scope(user_id: UUID, current_user_id: UUID) -> None:
+    if user_id != current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requested user_id does not match the authenticated user.",
+        )
+
+
 def _profile_response(profile) -> UserProfileResponse:
     return UserProfileResponse(
         id=str(profile.id),
@@ -55,6 +63,7 @@ async def create_or_update_user_profile(
     user_id: UUID,
     profile_data: UserProfileCreate,
     db: AsyncSession = Depends(get_async_db),
+    current_user_id: UUID = Depends(get_current_user_id),
 ) -> UserProfileResponse:
     """Create or update a user profile.
 
@@ -67,6 +76,8 @@ async def create_or_update_user_profile(
     If any mandatory field is missing, returns 422 with field details (Req 2.2).
     If values are out of range, returns 400 with acceptable range info (Req 2.6).
     """
+    _ensure_user_scope(user_id, current_user_id)
+
     try:
         profile, created = await create_or_update_profile(db, user_id, profile_data)
     except UserNotFoundError as e:
@@ -109,12 +120,15 @@ async def create_or_update_user_profile(
 async def get_user_profile(
     user_id: UUID,
     db: AsyncSession = Depends(get_async_db),
+    current_user_id: UUID = Depends(get_current_user_id),
 ) -> UserProfileResponse:
     """Retrieve a user's profile.
 
     Used for pre-populating profile fields with previously saved values (Req 2.7).
     Returns 404 if no profile exists for the given user.
     """
+    _ensure_user_scope(user_id, current_user_id)
+
     profile = await get_profile(db, user_id)
 
     if profile is None:
@@ -138,7 +152,9 @@ async def create_or_update_my_profile(
     db: AsyncSession = Depends(get_async_db),
 ) -> UserProfileResponse:
     """Create or update the current user's profile without trusting a path ID."""
-    return await create_or_update_user_profile(current_user_id, profile_data, db)
+    return await create_or_update_user_profile(
+        current_user_id, profile_data, db, current_user_id=current_user_id
+    )
 
 
 @router.get(
@@ -152,4 +168,4 @@ async def get_my_profile(
     db: AsyncSession = Depends(get_async_db),
 ) -> UserProfileResponse:
     """Retrieve the current user's profile without trusting a path ID."""
-    return await get_user_profile(current_user_id, db)
+    return await get_user_profile(current_user_id, db, current_user_id=current_user_id)

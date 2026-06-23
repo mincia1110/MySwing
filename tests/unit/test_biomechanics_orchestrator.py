@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from app.models.bat import BatDetectionResult, BatTrajectory
+from app.models.biomechanics import BiomechanicsResult
 from app.models.pose import Keypoint, PoseResult
 from app.pipeline.biomechanics_analyzer import (
     BIOMECHANICS_TIMEOUT_SECONDS,
@@ -154,6 +155,34 @@ class TestBiomechanicsOrchestratorSuccess:
         assert result.hand_path_efficiency is not None
         assert result.unmeasurable_metrics == []
         assert result.timeout_occurred is False
+
+    def test_swing_quality_sanity_guards_drop_unrealistic_partial_clip_metrics(self):
+        """Partial/cropped clips should not evaluate implausible body movement."""
+        orchestrator = BiomechanicsOrchestrator()
+        result = BiomechanicsResult(
+            stride_length_cm=214.0,
+            cog_sway_cm=86.0,
+            head_stability_cm=47.0,
+            hand_path_efficiency=0.01,
+            cog_drop_cm=8.0,
+        )
+        unmeasurable_metrics = []
+
+        orchestrator._apply_swing_quality_sanity_guards(
+            result, unmeasurable_metrics, user_height_cm=180.0
+        )
+
+        assert result.stride_length_cm is None
+        assert result.cog_sway_cm is None
+        assert result.head_stability_cm is None
+        assert result.hand_path_efficiency is None
+        assert result.cog_drop_cm == 8.0
+        assert {metric.metric_name for metric in unmeasurable_metrics} == {
+            "stride_length_cm",
+            "cog_sway_cm",
+            "head_stability_cm",
+            "hand_path_efficiency",
+        }
 
     def test_processing_time_is_recorded(self):
         """Processing time should be recorded in the result."""

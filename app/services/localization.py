@@ -200,7 +200,8 @@ _METRIC_LABELS_EN = {
     "cog_sway_cm": "center-of-gravity lateral sway",
     "cog_drop_cm": "center-of-gravity vertical drop",
     "head_stability_cm": "head stability",
-    "front_knee_flexion_degrees": "front knee flexion",
+    "front_knee_extension_degrees": "front knee extension",
+    "front_knee_flexion_degrees": "front knee extension",
     "spine_angle_degrees": "spine angle",
 }
 

@@ -12,7 +12,6 @@ import pytest
 
 from app.models.pose import Keypoint, PoseResult
 from app.pipeline.constants import (
-    ADDITIONAL_MEDIAPIPE_LANDMARKS,
     DEFAULT_MIN_CONFIDENCE,
     ESSENTIAL_KEYPOINT_NAMES,
     MEDIAPIPE_TO_ESSENTIAL,
@@ -21,10 +20,8 @@ from app.pipeline.constants import (
 )
 from app.pipeline.pose_estimator import (
     PoseEstimator,
-    PoseEstimatorProtocol,
     extract_keypoints_from_landmarks,
 )
-
 
 # --- Helper fixtures and mock data ---
 
@@ -74,18 +71,18 @@ def create_mock_landmarks_with_varied_confidence(
 class TestConstants:
     """Tests for keypoint mapping constants."""
 
-    def test_mediapipe_to_essential_has_13_direct_mappings(self):
-        """MEDIAPIPE_TO_ESSENTIAL should map 13 MediaPipe indices to names."""
-        assert len(MEDIAPIPE_TO_ESSENTIAL) == 13
+    def test_mediapipe_to_essential_has_17_direct_mappings(self):
+        """MEDIAPIPE_TO_ESSENTIAL should map 17 MediaPipe indices to names."""
+        assert len(MEDIAPIPE_TO_ESSENTIAL) == 17
 
     def test_mediapipe_indices_are_valid(self):
         """All MediaPipe indices should be in range 0-32."""
         for idx in MEDIAPIPE_TO_ESSENTIAL:
             assert 0 <= idx <= 32
 
-    def test_essential_keypoint_names_has_17_entries(self):
-        """ESSENTIAL_KEYPOINT_NAMES should have 17 entries."""
-        assert len(ESSENTIAL_KEYPOINT_NAMES) == 17
+    def test_essential_keypoint_names_has_22_entries(self):
+        """ESSENTIAL_KEYPOINT_NAMES should include canonical names and aliases."""
+        assert len(ESSENTIAL_KEYPOINT_NAMES) == 22
 
     def test_all_direct_mappings_in_essential_names(self):
         """All directly mapped keypoint names should be in ESSENTIAL_KEYPOINT_NAMES."""
@@ -117,12 +114,12 @@ class TestKeypointMapping:
     """Tests for the 33 → 17+ keypoint mapping logic."""
 
     def test_extract_all_essential_keypoints_from_high_confidence_landmarks(self):
-        """All 13 direct + spine + neck + 2 ears = 17 keypoints from high-confidence landmarks."""
+        """All direct keypoints, aliases, spine, and ears are extracted."""
         landmarks = create_mock_landmarks(33, default_confidence=0.9)
         keypoints = extract_keypoints_from_landmarks(landmarks, min_confidence=0.5)
 
-        # 13 direct + 2 additional (ears) + 1 spine = 16 (neck not in utility function)
-        assert len(keypoints) >= 15  # At minimum: 13 direct + 2 ears
+        # 17 direct + 2 additional (ears) + 1 spine + 1 head alias.
+        assert len(keypoints) >= 21
 
     def test_mapping_produces_correct_names(self):
         """Extracted keypoints should have correct names from the mapping."""
@@ -131,9 +128,14 @@ class TestKeypointMapping:
 
         names = {kp.name for kp in keypoints}
         # Check essential direct mappings are present
+        assert "nose" in names
         assert "head" in names
+        assert "left_eye" in names
+        assert "right_eye" in names
         assert "left_shoulder" in names
         assert "right_shoulder" in names
+        assert "left_index" in names
+        assert "right_index" in names
         assert "left_hip" in names
         assert "right_hip" in names
         assert "left_wrist" in names
@@ -159,15 +161,19 @@ class TestKeypointMapping:
         # Spine confidence = min of both shoulders
         assert abs(spine.confidence - 0.85) < 1e-6
 
-    def test_nose_maps_to_head(self):
-        """MediaPipe landmark 0 (nose) should map to 'head'."""
+    def test_nose_maps_to_canonical_name_and_head_alias(self):
+        """MediaPipe landmark 0 should emit canonical 'nose' and legacy 'head'."""
         landmarks = create_mock_landmarks(33, default_confidence=0.9)
         landmarks[0] = MockLandmark(x=0.5, y=0.2, z=0.0, visibility=0.95)
 
         keypoints = extract_keypoints_from_landmarks(landmarks, min_confidence=0.5)
+        nose = next((kp for kp in keypoints if kp.name == "nose"), None)
         head = next((kp for kp in keypoints if kp.name == "head"), None)
 
+        assert nose is not None
         assert head is not None
+        assert abs(nose.x - 0.5) < 1e-6
+        assert abs(nose.y - 0.2) < 1e-6
         assert abs(head.x - 0.5) < 1e-6
         assert abs(head.y - 0.2) < 1e-6
 
@@ -212,8 +218,8 @@ class TestConfidenceFiltering:
         landmarks = create_mock_landmarks(33, default_confidence=0.9)
         keypoints = extract_keypoints_from_landmarks(landmarks, min_confidence=0.5)
 
-        # All 13 direct + 2 ears + 1 spine = 16
-        assert len(keypoints) == 16
+        # 17 direct + 2 ears + 1 spine + 1 head alias.
+        assert len(keypoints) == 21
 
     def test_all_keypoints_below_threshold_returns_empty(self):
         """If all keypoints are below threshold, result should be empty."""

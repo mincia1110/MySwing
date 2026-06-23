@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.models.bat import BatDetectionResult, BatTrajectory
+from app.models.bat import BatTrajectory
 from app.models.biomechanics import (
     BiomechanicsResult,
     KinematicChainResult,
@@ -57,7 +57,7 @@ _REFERENCE_DATA: Dict[str, Dict[str, List[ReferenceRange]]] = {
             ReferenceRange("cog_sway_cm", 0.0, 12.0, 0.0, 6.0, "cm"),
             ReferenceRange("cog_drop_cm", 1.0, 18.0, 2.0, 10.0, "cm"),
             ReferenceRange("head_stability_cm", 0.0, 12.0, 0.0, 6.0, "cm"),
-            ReferenceRange("front_knee_flexion_degrees", 115.0, 155.0, 125.0, 145.0, "degrees"),
+            ReferenceRange("front_knee_extension_degrees", 155.0, 180.0, 165.0, 180.0, "degrees"),
             ReferenceRange("spine_angle_degrees", -15.0, 20.0, -5.0, 12.0, "degrees"),
         ],
     },
@@ -71,7 +71,7 @@ _REFERENCE_DATA: Dict[str, Dict[str, List[ReferenceRange]]] = {
             ReferenceRange("cog_sway_cm", 0.0, 8.0, 0.0, 4.0, "cm"),
             ReferenceRange("cog_drop_cm", 2.0, 15.0, 3.0, 8.0, "cm"),
             ReferenceRange("head_stability_cm", 0.0, 8.0, 0.0, 4.0, "cm"),
-            ReferenceRange("front_knee_flexion_degrees", 120.0, 150.0, 130.0, 140.0, "degrees"),
+            ReferenceRange("front_knee_extension_degrees", 160.0, 180.0, 170.0, 180.0, "degrees"),
             ReferenceRange("spine_angle_degrees", -10.0, 15.0, 0.0, 10.0, "degrees"),
         ],
     },
@@ -85,7 +85,7 @@ _REFERENCE_DATA: Dict[str, Dict[str, List[ReferenceRange]]] = {
             ReferenceRange("cog_sway_cm", 0.0, 10.0, 0.0, 5.0, "cm"),
             ReferenceRange("cog_drop_cm", 1.5, 16.0, 2.5, 9.0, "cm"),
             ReferenceRange("head_stability_cm", 0.0, 10.0, 0.0, 5.0, "cm"),
-            ReferenceRange("front_knee_flexion_degrees", 118.0, 152.0, 128.0, 142.0, "degrees"),
+            ReferenceRange("front_knee_extension_degrees", 158.0, 180.0, 168.0, 180.0, "degrees"),
             ReferenceRange("spine_angle_degrees", -12.0, 18.0, -2.0, 11.0, "degrees"),
         ],
     },
@@ -99,7 +99,7 @@ _REFERENCE_DATA: Dict[str, Dict[str, List[ReferenceRange]]] = {
             ReferenceRange("cog_sway_cm", 0.0, 12.0, 0.0, 6.0, "cm"),
             ReferenceRange("cog_drop_cm", 1.0, 17.0, 2.0, 10.0, "cm"),
             ReferenceRange("head_stability_cm", 0.0, 12.0, 0.0, 6.0, "cm"),
-            ReferenceRange("front_knee_flexion_degrees", 115.0, 155.0, 125.0, 145.0, "degrees"),
+            ReferenceRange("front_knee_extension_degrees", 155.0, 180.0, 165.0, 180.0, "degrees"),
             ReferenceRange("spine_angle_degrees", -15.0, 20.0, -5.0, 12.0, "degrees"),
         ],
         "youth": [
@@ -111,7 +111,7 @@ _REFERENCE_DATA: Dict[str, Dict[str, List[ReferenceRange]]] = {
             ReferenceRange("cog_sway_cm", 0.0, 14.0, 0.0, 8.0, "cm"),
             ReferenceRange("cog_drop_cm", 0.5, 20.0, 1.5, 12.0, "cm"),
             ReferenceRange("head_stability_cm", 0.0, 14.0, 0.0, 8.0, "cm"),
-            ReferenceRange("front_knee_flexion_degrees", 110.0, 160.0, 120.0, 150.0, "degrees"),
+            ReferenceRange("front_knee_extension_degrees", 150.0, 180.0, 160.0, 178.0, "degrees"),
             ReferenceRange("spine_angle_degrees", -18.0, 22.0, -8.0, 15.0, "degrees"),
         ],
     },
@@ -127,6 +127,7 @@ _METRIC_EXTRACTORS: Dict[str, str] = {
     "cog_sway_cm": "cog_sway_cm",
     "cog_drop_cm": "cog_drop_cm",
     "head_stability_cm": "head_stability_cm",
+    "front_knee_extension_degrees": "front_knee_extension_degrees",
     "front_knee_flexion_degrees": "front_knee_flexion_degrees",
     "spine_angle_degrees": "spine_angle_degrees",
 }
@@ -251,6 +252,12 @@ class ReferenceComparator:
             return biomechanics.cog_drop_cm
         elif metric_name == "head_stability_cm":
             return biomechanics.head_stability_cm
+        elif metric_name == "front_knee_extension_degrees":
+            return (
+                biomechanics.front_knee_extension_degrees
+                if biomechanics.front_knee_extension_degrees is not None
+                else biomechanics.front_knee_flexion_degrees
+            )
         elif metric_name == "front_knee_flexion_degrees":
             return biomechanics.front_knee_flexion_degrees
         elif metric_name == "spine_angle_degrees":
@@ -581,6 +588,7 @@ class WeightTransferAnalyzer:
         pose_sequence: List[PoseResult],
         swing_phases: SwingPhaseResult,
         fps: float,
+        batting_direction: str = "right",
     ) -> WeightTransferResult:
         """Analyze weight transfer timing from pose sequence.
 
@@ -588,6 +596,8 @@ class WeightTransferAnalyzer:
             pose_sequence: List of PoseResult ordered by frame_index.
             swing_phases: Swing phase classification result with phase boundaries.
             fps: Video frame rate.
+            batting_direction: Batter handedness; left-handed batters use right_ankle
+                as the front foot, right-handed batters use left_ankle.
 
         Returns:
             WeightTransferResult with stride_to_foot_plant_ms and
@@ -609,11 +619,13 @@ class WeightTransferAnalyzer:
                 foot_plant_to_hip_rotation_ms=0.0,
             )
 
+        front_ankle = self._front_ankle_name(batting_direction)
+
         # Detect key events
         stride_initiation = self._detect_stride_initiation(
-            pose_sequence, stride_phase
+            pose_sequence, stride_phase, front_ankle
         )
-        foot_plant = self._detect_foot_plant(pose_sequence, stride_phase)
+        foot_plant = self._detect_foot_plant(pose_sequence, stride_phase, front_ankle)
         hip_rotation_onset = self._detect_hip_rotation_onset(
             pose_sequence, rotation_phase
         )
@@ -635,6 +647,7 @@ class WeightTransferAnalyzer:
         self,
         pose_sequence: List[PoseResult],
         stride_phase: tuple[int, int],
+        front_ankle_name: str,
     ) -> int:
         """Detect the frame where the front foot begins lifting (stride initiation).
 
@@ -645,6 +658,7 @@ class WeightTransferAnalyzer:
         Args:
             pose_sequence: List of PoseResult.
             stride_phase: Tuple of (start_frame, end_frame) for stride phase.
+            front_ankle_name: Keypoint name for the batter's front ankle.
 
         Returns:
             Frame index of stride initiation.
@@ -660,11 +674,11 @@ class WeightTransferAnalyzer:
         if len(stride_poses) < 2:
             return start_frame
 
-        # Look for front foot (left_ankle) beginning to lift
+        # Look for front foot beginning to lift.
         # In image coordinates, lifting means y decreases
         for i in range(1, len(stride_poses)):
-            prev_ankle = self._find_keypoint(stride_poses[i - 1], "left_ankle")
-            curr_ankle = self._find_keypoint(stride_poses[i], "left_ankle")
+            prev_ankle = self._find_keypoint(stride_poses[i - 1], front_ankle_name)
+            curr_ankle = self._find_keypoint(stride_poses[i], front_ankle_name)
 
             if prev_ankle is not None and curr_ankle is not None:
                 # Foot is lifting if y decreases (moves up in image)
@@ -678,6 +692,7 @@ class WeightTransferAnalyzer:
         self,
         pose_sequence: List[PoseResult],
         stride_phase: tuple[int, int],
+        front_ankle_name: str,
     ) -> int:
         """Detect the frame where the front foot stabilizes (foot plant).
 
@@ -688,6 +703,7 @@ class WeightTransferAnalyzer:
         Args:
             pose_sequence: List of PoseResult.
             stride_phase: Tuple of (start_frame, end_frame) for stride phase.
+            front_ankle_name: Keypoint name for the batter's front ankle.
 
         Returns:
             Frame index of foot plant.
@@ -708,8 +724,8 @@ class WeightTransferAnalyzer:
         stability_threshold = 0.003  # Minimal y-change indicates stability
 
         for i in range(len(stride_poses) - 1, 1, -1):
-            curr_ankle = self._find_keypoint(stride_poses[i], "left_ankle")
-            prev_ankle = self._find_keypoint(stride_poses[i - 1], "left_ankle")
+            curr_ankle = self._find_keypoint(stride_poses[i], front_ankle_name)
+            prev_ankle = self._find_keypoint(stride_poses[i - 1], front_ankle_name)
 
             if curr_ankle is not None and prev_ankle is not None:
                 y_change = abs(curr_ankle.y - prev_ankle.y)
@@ -718,6 +734,11 @@ class WeightTransferAnalyzer:
 
         # Default to stride phase end
         return end_frame
+
+    @staticmethod
+    def _front_ankle_name(batting_direction: str) -> str:
+        """Return the lead/front ankle keypoint for the batter handedness."""
+        return "right_ankle" if str(batting_direction).lower() == "left" else "left_ankle"
 
     def _detect_hip_rotation_onset(
         self,

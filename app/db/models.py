@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -97,6 +98,9 @@ class VideoTable(Base):
     """Videos table - stores uploaded video file metadata."""
 
     __tablename__ = "videos"
+    __table_args__ = (
+        Index("ix_videos_file_key", "file_key"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -128,6 +132,10 @@ class AnalysisTable(Base):
     """Analyses table - tracks analysis job status and lifecycle."""
 
     __tablename__ = "analyses"
+    __table_args__ = (
+        Index("ix_analyses_user_id_created_at", "user_id", "created_at"),
+        Index("ix_analyses_status", "status"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

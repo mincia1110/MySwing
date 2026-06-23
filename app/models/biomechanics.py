@@ -94,6 +94,7 @@ class BiomechanicsResult:
     cog_sway_cm: Optional[float] = None
     cog_drop_cm: Optional[float] = None
     head_stability_cm: Optional[float] = None
+    front_knee_extension_degrees: Optional[float] = None
     front_knee_flexion_degrees: Optional[float] = None
     spine_angle_degrees: Optional[float] = None
     unmeasurable_metrics: list[UnmeasurableMetric] = field(default_factory=list)

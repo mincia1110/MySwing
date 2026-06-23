@@ -34,6 +34,10 @@ def client() -> TestClient:
         app.dependency_overrides.clear()
 
 
+def _user_headers(user_id: uuid.UUID) -> dict[str, str]:
+    return {"X-User-Id": str(user_id)}
+
+
 @pytest.fixture
 def valid_profile_data() -> dict:
     """Valid profile data with all required fields."""
@@ -144,7 +148,11 @@ class TestProfileCreation:
             "bat_length": 34.0,
             "batting_direction": "right",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
         body = response.json()
         assert "detail" in body
@@ -159,7 +167,11 @@ class TestProfileCreation:
             "height": 175.0,
             "batting_direction": "right",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
         body = response.json()
         error_fields = [err["loc"][-1] for err in body["detail"]]
@@ -172,7 +184,11 @@ class TestProfileCreation:
             "height": 175.0,
             "bat_length": 34.0,
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
         body = response.json()
         error_fields = [err["loc"][-1] for err in body["detail"]]
@@ -182,7 +198,11 @@ class TestProfileCreation:
         """Missing all required fields returns 422 listing all missing fields."""
         user_id = uuid.uuid4()
         data = {}
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
         body = response.json()
         error_fields = [err["loc"][-1] for err in body["detail"]]
@@ -202,7 +222,11 @@ class TestProfileRangeValidation:
             "bat_length": 34.0,
             "batting_direction": "right",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
         body = response.json()
         # Should indicate the valid range
@@ -217,7 +241,11 @@ class TestProfileRangeValidation:
             "bat_length": 34.0,
             "batting_direction": "right",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
         body = response.json()
         detail_str = str(body["detail"])
@@ -251,7 +279,11 @@ class TestProfileRangeValidation:
             "bat_length": 50.0,
             "batting_direction": "right",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
         body = response.json()
         detail_str = str(body["detail"])
@@ -265,7 +297,11 @@ class TestProfileRangeValidation:
             "bat_length": 23.0,
             "batting_direction": "right",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
 
     def test_bat_length_above_maximum(self, client):
@@ -276,7 +312,11 @@ class TestProfileRangeValidation:
             "bat_length": 92.0,
             "batting_direction": "right",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
 
     def test_bat_weight_below_minimum(self, client):
@@ -288,7 +328,11 @@ class TestProfileRangeValidation:
             "batting_direction": "right",
             "bat_weight": 15.0,
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
 
     def test_bat_weight_above_maximum(self, client):
@@ -300,7 +344,11 @@ class TestProfileRangeValidation:
             "batting_direction": "right",
             "bat_weight": 37.0,
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
 
     def test_invalid_batting_direction(self, client):
@@ -311,7 +359,11 @@ class TestProfileRangeValidation:
             "bat_length": 34.0,
             "batting_direction": "center",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
 
 
@@ -324,7 +376,10 @@ class TestProfileRetrieval:
 
         with patch("app.api.profile.get_profile", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = None
-            response = client.get(f"/api/v1/users/{user_id}/profile")
+            response = client.get(
+                f"/api/v1/users/{user_id}/profile",
+                headers=_user_headers(user_id),
+            )
 
         assert response.status_code == 404
         body = response.json()
@@ -337,7 +392,10 @@ class TestProfileRetrieval:
 
         with patch("app.api.profile.get_profile", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = mock_profile_row
-            response = client.get(f"/api/v1/users/{user_id}/profile")
+            response = client.get(
+                f"/api/v1/users/{user_id}/profile",
+                headers=_user_headers(user_id),
+            )
 
         assert response.status_code == 200
         body = response.json()
@@ -349,6 +407,20 @@ class TestProfileRetrieval:
         assert body["age_group"] == "adult"
         assert body["level"] == "recreational"
         assert body["bat_weight"] == 30.0
+
+    def test_get_profile_rejects_other_user(self, client):
+        """Path user_id must match the authenticated user."""
+        target_user_id = uuid.uuid4()
+        current_user_id = uuid.uuid4()
+
+        with patch("app.api.profile.get_profile", new_callable=AsyncMock) as mock_get:
+            response = client.get(
+                f"/api/v1/users/{target_user_id}/profile",
+                headers=_user_headers(current_user_id),
+            )
+
+        assert response.status_code == 403
+        mock_get.assert_not_called()
 
 
 class TestProfileUpsert:
@@ -364,12 +436,31 @@ class TestProfileUpsert:
         ) as mock_upsert:
             mock_upsert.return_value = (mock_profile_row, True)
             response = client.post(
-                f"/api/v1/users/{user_id}/profile", json=valid_profile_data
+                f"/api/v1/users/{user_id}/profile",
+                json=valid_profile_data,
+                headers=_user_headers(user_id),
             )
 
         assert response.status_code == 201
         body = response.json()
         assert body["height"] == 175.0
+
+    def test_upsert_rejects_other_user(self, client, valid_profile_data):
+        """Path user_id cannot target a different authenticated user."""
+        target_user_id = uuid.uuid4()
+        current_user_id = uuid.uuid4()
+
+        with patch(
+            "app.api.profile.create_or_update_profile", new_callable=AsyncMock
+        ) as mock_upsert:
+            response = client.post(
+                f"/api/v1/users/{target_user_id}/profile",
+                json=valid_profile_data,
+                headers=_user_headers(current_user_id),
+            )
+
+        assert response.status_code == 403
+        mock_upsert.assert_not_called()
 
     def test_upsert_rejects_missing_user(self, client, valid_profile_data):
         """POST for an unknown user returns 404 instead of leaking a DB FK 500."""
@@ -382,7 +473,9 @@ class TestProfileUpsert:
         ) as mock_upsert:
             mock_upsert.side_effect = UserNotFoundError(user_id)
             response = client.post(
-                f"/api/v1/users/{user_id}/profile", json=valid_profile_data
+                f"/api/v1/users/{user_id}/profile",
+                json=valid_profile_data,
+                headers=_user_headers(user_id),
             )
 
         assert response.status_code == 404
@@ -400,7 +493,9 @@ class TestProfileUpsert:
         ) as mock_upsert:
             mock_upsert.return_value = (mock_profile_row, False)
             response = client.post(
-                f"/api/v1/users/{user_id}/profile", json=valid_profile_data
+                f"/api/v1/users/{user_id}/profile",
+                json=valid_profile_data,
+                headers=_user_headers(user_id),
             )
 
         assert response.status_code == 200
@@ -446,7 +541,11 @@ class TestOptionalFields:
             "batting_direction": "right",
             "camera_direction": "top",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
 
     def test_invalid_level(self, client):
@@ -458,7 +557,11 @@ class TestOptionalFields:
             "batting_direction": "right",
             "level": "amateur",
         }
-        response = client.post(f"/api/v1/users/{user_id}/profile", json=data)
+        response = client.post(
+            f"/api/v1/users/{user_id}/profile",
+            json=data,
+            headers=_user_headers(user_id),
+        )
         assert response.status_code == 422
 
 

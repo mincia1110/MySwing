@@ -546,7 +546,8 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
         # ---- Step 5: Swing Evaluation ----
         evaluation_result = _run_swing_evaluation(
             analysis_id, biomechanics_result, bat_result, pose_result,
-            swing_phases_result, user_profile, fps
+            swing_phases_result, user_profile, fps,
+            batting_direction=preprocessing_result.get("canonical_batting_direction", "right"),
         )
 
         # ---- Step 6: Report Generation ----
@@ -1307,6 +1308,30 @@ def _estimate_phases_from_speed(
     return phases, durations
 
 
+def _transitions_from_phase_ranges(phases: dict) -> list[dict[str, Any]]:
+    """Build transition boundaries that match serialized fallback phase ranges."""
+    ordered_phases = [
+        "stance",
+        "load",
+        "stride",
+        "rotation",
+        "impact",
+        "follow_through",
+    ]
+    transitions = []
+    for from_phase, to_phase in zip(ordered_phases, ordered_phases[1:]):
+        to_range = phases.get(to_phase)
+        if not isinstance(to_range, (list, tuple)) or len(to_range) < 2:
+            continue
+        transitions.append({
+            "from_phase": from_phase,
+            "to_phase": to_phase,
+            "frame_index": int(to_range[0]),
+            "confidence": 0.75,
+        })
+    return transitions
+
+
 def _run_swing_classification(
     analysis_id: str,
     pose_result: dict,
@@ -1381,6 +1406,7 @@ def _run_swing_classification(
             )
             if phases_dict:
                 serialized["phases"] = phases_dict
+                serialized["transitions"] = _transitions_from_phase_ranges(phases_dict)
                 serialized["phase_durations_ms"] = durations_dict
                 serialized["anomalies"] = []
                 logger.info(
@@ -1667,6 +1693,7 @@ def _run_swing_evaluation(
     swing_phases_result: dict,
     user_profile: dict | None,
     fps: float,
+    batting_direction: str = "right",
 ) -> dict[str, Any]:
     """Run swing evaluation step.
 
@@ -1681,6 +1708,7 @@ def _run_swing_evaluation(
         swing_phases_result: Output from swing classification.
         user_profile: User profile data for reference comparison.
         fps: Video frame rate.
+        batting_direction: Batter handedness in the pose coordinate space.
 
     Returns:
         Dictionary with evaluation results.
@@ -1692,6 +1720,7 @@ def _run_swing_evaluation(
         from app.models.biomechanics import (
             BatSpeedResult,
             BiomechanicsResult,
+            JointAngularVelocity,
             KinematicChainResult,
             LaunchAngleResult,
             RotationResult,
@@ -1722,7 +1751,18 @@ def _run_swing_evaluation(
             )
         if biomechanics_result.get("kinematic_chain"):
             kc = biomechanics_result["kinematic_chain"]
+            joint_peaks = {}
+            for joint_name, peak in kc.get("joint_peak_angular_velocities", {}).items():
+                if not isinstance(peak, dict):
+                    continue
+                joint_peaks[joint_name] = JointAngularVelocity(
+                    joint_name=peak.get("joint_name", joint_name),
+                    peak_velocity_dps=peak.get("peak_velocity_dps", 0.0),
+                    peak_frame=peak.get("peak_frame", 0),
+                    peak_time_ms=peak.get("peak_time_ms", 0.0),
+                )
             bio.kinematic_chain = KinematicChainResult(
+                joint_peak_angular_velocities=joint_peaks,
                 sequence_correct=kc.get("sequence_correct", False),
                 timing_gaps_ms=kc.get("timing_gaps_ms", {}),
             )
@@ -1740,8 +1780,8 @@ def _run_swing_evaluation(
 
         # Swing quality metrics (may be None)
         for field in ["stride_length_cm", "cog_sway_cm", "cog_drop_cm",
-                      "head_stability_cm", "front_knee_flexion_degrees",
-                      "spine_angle_degrees"]:
+                      "head_stability_cm", "front_knee_extension_degrees",
+                      "front_knee_flexion_degrees", "spine_angle_degrees"]:
             if biomechanics_result.get(field) is not None:
                 setattr(bio, field, biomechanics_result[field])
 
@@ -1788,7 +1828,7 @@ def _run_swing_evaluation(
                     pass
 
             wt_result = wt_analyzer.analyze_weight_transfer(
-                pose_sequence, spr, fps
+                pose_sequence, spr, fps, batting_direction=batting_direction
             )
             weight_transfer_result = _serialize_dataclass(wt_result)
 

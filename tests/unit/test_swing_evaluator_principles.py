@@ -8,10 +8,9 @@ import pytest
 
 from app.models.bat import BatDetectionResult, BatTrajectory
 from app.models.biomechanics import (
-    LaunchAngleResult,
-    BiomechanicsResult,
     JointAngularVelocity,
     KinematicChainResult,
+    LaunchAngleResult,
 )
 from app.models.enums import SwingPhase
 from app.models.evaluation import WeightTransferResult
@@ -22,7 +21,6 @@ from app.pipeline.swing_evaluator import (
     ModernPrinciplesEvaluator,
     WeightTransferAnalyzer,
 )
-
 
 # --- Helper functions ---
 
@@ -225,6 +223,61 @@ class TestEvaluateKinematicSequence:
         assert result["all_gaps_within_threshold"] is True
         assert result["max_gap_ms"] == 30.0
 
+    def test_pipeline_evaluation_preserves_serialized_joint_peaks(self):
+        """Serialized biomechanics results should keep joint peaks for principles."""
+        from app.tasks import pipeline
+
+        joint_peak_angular_velocities = {
+            "hips": {
+                "joint_name": "hips",
+                "peak_velocity_dps": 500.0,
+                "peak_frame": 10,
+                "peak_time_ms": 0.0,
+            },
+            "shoulders": {
+                "joint_name": "shoulders",
+                "peak_velocity_dps": 700.0,
+                "peak_frame": 12,
+                "peak_time_ms": 33.0,
+            },
+            "elbows": {
+                "joint_name": "elbows",
+                "peak_velocity_dps": 900.0,
+                "peak_frame": 14,
+                "peak_time_ms": 66.0,
+            },
+            "wrists": {
+                "joint_name": "wrists",
+                "peak_velocity_dps": 1100.0,
+                "peak_frame": 16,
+                "peak_time_ms": 99.0,
+            },
+        }
+        result = pipeline._run_swing_evaluation(
+            "analysis-id",
+            {
+                "kinematic_chain": {
+                    "joint_peak_angular_velocities": joint_peak_angular_velocities,
+                    "sequence_correct": True,
+                    "timing_gaps_ms": {
+                        "hips_to_shoulders": 33.0,
+                        "shoulders_to_elbows": 33.0,
+                        "elbows_to_wrists": 33.0,
+                    },
+                }
+            },
+            {"bat_trajectory": pipeline._serialize_dataclass(BatTrajectory())},
+            {"pose_sequence": []},
+            {"phases": {}},
+            user_profile=None,
+            fps=30.0,
+        )
+
+        sequence = result["principles_evaluation"]["kinematic_sequence"]
+        assert "reason" not in sequence
+        assert sequence["sequence_correct"] is True
+        assert sequence["max_gap_ms"] == 33.0
+
     def test_incorrect_sequence_order_fails(self):
         """Incorrect order (wrists before elbows) should fail."""
         kinematic_chain = KinematicChainResult(
@@ -363,6 +416,59 @@ class TestWeightTransferAnalyzer:
         assert result.foot_plant_to_hip_rotation_ms >= 0.0
         # The stride to foot plant should be positive (foot plant after stride)
         assert result.stride_to_foot_plant_ms > 0.0
+
+    def test_left_handed_batter_uses_right_ankle_as_front_foot(self):
+        """Left-handed weight transfer timing should track the right ankle."""
+        fps = 60.0
+        pose_sequence = []
+
+        for i in range(10, 26):
+            right_y = 0.9 if i <= 11 else 0.82
+            left_y = 0.9 if i <= 19 else 0.82
+            pose_sequence.append(
+                _make_pose(
+                    i,
+                    [
+                        _make_keypoint("left_hip", 0.4, 0.5),
+                        _make_keypoint("right_hip", 0.6, 0.5),
+                        _make_keypoint("left_ankle", 0.3, left_y),
+                        _make_keypoint("right_ankle", 0.7, right_y),
+                    ],
+                )
+            )
+
+        for i in range(26, 41):
+            hip_angle_offset = 0.0 if i < 27 else (i - 27) * 0.01
+            pose_sequence.append(
+                _make_pose(
+                    i,
+                    [
+                        _make_keypoint("left_hip", 0.4 + hip_angle_offset, 0.5),
+                        _make_keypoint("right_hip", 0.6 - hip_angle_offset, 0.5),
+                        _make_keypoint("left_ankle", 0.3, 0.82),
+                        _make_keypoint("right_ankle", 0.7, 0.82),
+                    ],
+                )
+            )
+
+        swing_phases = SwingPhaseResult(
+            phases={
+                SwingPhase.STRIDE: (10, 25),
+                SwingPhase.ROTATION: (25, 40),
+            },
+            transitions=[],
+            phase_durations_ms={},
+            anomalies=[],
+        )
+
+        left_result = self.analyzer.analyze_weight_transfer(
+            pose_sequence, swing_phases, fps, batting_direction="left"
+        )
+        right_result = self.analyzer.analyze_weight_transfer(
+            pose_sequence, swing_phases, fps, batting_direction="right"
+        )
+
+        assert left_result.stride_to_foot_plant_ms > right_result.stride_to_foot_plant_ms
 
     def test_weight_transfer_with_missing_phases(self):
         """Test that missing phases return zero timing."""

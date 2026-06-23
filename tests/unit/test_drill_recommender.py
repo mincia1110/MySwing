@@ -163,7 +163,7 @@ class TestAllMetricsHaveDrillMappings:
         "cog_sway_cm",
         "cog_drop_cm",
         "head_stability_cm",
-        "front_knee_flexion_degrees",
+        "front_knee_extension_degrees",
         "spine_angle_degrees",
     ]
 
@@ -229,7 +229,7 @@ class TestDirectionalSelection:
             "cog_sway_cm",
             "cog_drop_cm",
             "head_stability_cm",
-            "front_knee_flexion_degrees",
+            "front_knee_extension_degrees",
             "spine_angle_degrees",
         ],
     )
@@ -309,7 +309,7 @@ class TestKoreanDrillContent:
             "cog_sway_cm",
             "cog_drop_cm",
             "head_stability_cm",
-            "front_knee_flexion_degrees",
+            "front_knee_extension_degrees",
             "spine_angle_degrees",
         ],
     )

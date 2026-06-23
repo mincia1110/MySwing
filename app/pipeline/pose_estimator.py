@@ -20,12 +20,31 @@ from app.models.pose import Keypoint, PoseResult
 from app.pipeline.constants import (
     ADDITIONAL_MEDIAPIPE_LANDMARKS,
     DEFAULT_MIN_CONFIDENCE,
+    KEYPOINT_ALIASES,
     MEDIAPIPE_TO_ESSENTIAL,
     SPINE_KEYPOINT_NAME,
     SPINE_SOURCE_INDICES,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _append_keypoint_aliases(keypoints: list[Keypoint]) -> None:
+    """Append backward-compatible aliases for canonical keypoint names."""
+    by_name = {kp.name: kp for kp in keypoints}
+    for source_name, alias_name in KEYPOINT_ALIASES.items():
+        source = by_name.get(source_name)
+        if source is None or alias_name in by_name:
+            continue
+        keypoints.append(
+            Keypoint(
+                x=source.x,
+                y=source.y,
+                z=source.z,
+                confidence=source.confidence,
+                name=alias_name,
+            )
+        )
 
 # Try to import MediaPipe; if unavailable, set a flag
 try:
@@ -230,6 +249,7 @@ class PoseEstimator:
                 )
             )
 
+        _append_keypoint_aliases(keypoints)
         return keypoints
 
     def _filter_by_confidence(self, keypoints: list[Keypoint]) -> list[Keypoint]:
@@ -335,4 +355,5 @@ def extract_keypoints_from_landmarks(
                 )
             )
 
+    _append_keypoint_aliases(keypoints)
     return keypoints

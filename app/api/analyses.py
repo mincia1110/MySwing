@@ -77,6 +77,14 @@ def _extract_analysis_metadata(analysis_result: Any) -> dict:
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _ensure_analysis_scope(analysis: AnalysisTable, current_user_id: UUID) -> None:
+    if analysis.user_id != current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Analysis belongs to a different user.",
+        )
+
+
 @router.post(
     "",
     response_model=AnalysisCreateResponse,
@@ -103,7 +111,13 @@ async def create_analysis(
 
     Returns 202 Accepted with the analysis_id.
     """
-    user_id = request.user_id or current_user_id
+    if request.user_id is not None and request.user_id != current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="request.user_id must match the authenticated user.",
+        )
+
+    user_id = current_user_id
 
     # Verify user profile exists (Requirement 2.1 - profile required before analysis)
     profile_result = await db.execute(
@@ -156,19 +170,23 @@ async def create_analysis(
     )
     db.add(analysis)
     await db.flush()
+    analysis_id = analysis.id
+
+    # Make the analysis row visible to workers before enqueueing the task.
+    await db.commit()
 
     # Enqueue Celery task
-    analyze_swing_task.delay(str(analysis.id))
+    analyze_swing_task.delay(str(analysis_id))
 
     logger.info(
         "Analysis job created: analysis_id=%s, user_id=%s, video_id=%s",
-        analysis.id,
+        analysis_id,
         user_id,
         video.id,
     )
 
     return {
-        "analysis_id": str(analysis.id),
+        "analysis_id": str(analysis_id),
         "status": "pending",
         "message": "Analysis job created and enqueued for processing.",
         "input_validation": input_validation.to_dict(),
@@ -186,6 +204,7 @@ async def create_analysis(
 )
 async def get_analysis_status(
     analysis_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ) -> AnalysisStatusResponse:
     """Get the current status of an analysis job.
@@ -202,6 +221,8 @@ async def get_analysis_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Analysis not found: {analysis_id}",
         )
+
+    _ensure_analysis_scope(analysis, current_user_id)
 
     return AnalysisStatusResponse(
         analysis_id=str(analysis.id),
@@ -229,6 +250,7 @@ async def get_analysis_status(
 async def get_analysis_report(
     analysis_id: UUID,
     locale: str = Query(default="ko", description="Response language: ko or en"),
+    current_user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ) -> AnalysisReportResponse:
     """Retrieve the complete analysis report.
@@ -246,6 +268,8 @@ async def get_analysis_report(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Analysis not found: {analysis_id}",
         )
+
+    _ensure_analysis_scope(analysis, current_user_id)
 
     if analysis.status != "completed":
         raise HTTPException(
@@ -449,6 +473,7 @@ async def get_analysis_report(
 )
 async def get_analysis_overlay(
     analysis_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     """Retrieve the overlay video URL.
@@ -466,6 +491,8 @@ async def get_analysis_overlay(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Analysis not found: {analysis_id}",
         )
+
+    _ensure_analysis_scope(analysis, current_user_id)
 
     if analysis.status != "completed":
         raise HTTPException(
@@ -513,6 +540,7 @@ async def get_analysis_overlay(
 )
 async def get_analysis_metrics(
     analysis_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     """Retrieve metrics data for an analysis.
@@ -530,6 +558,8 @@ async def get_analysis_metrics(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Analysis not found: {analysis_id}",
         )
+
+    _ensure_analysis_scope(analysis, current_user_id)
 
     if analysis.status != "completed":
         raise HTTPException(

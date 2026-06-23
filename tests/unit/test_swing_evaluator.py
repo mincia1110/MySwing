@@ -350,3 +350,35 @@ class TestAllMetricsEvaluated:
         assert values_map["attack_angle"] == 12.0
         assert values_map["hip_shoulder_separation"] == 35.0
         assert values_map["hand_path_efficiency"] == 0.70
+
+    def test_front_knee_extension_near_180_is_within_range(
+        self, comparator: ReferenceComparator
+    ):
+        """Lead-leg bracing uses extension angle, so near-180° is valid."""
+        biomechanics = BiomechanicsResult(front_knee_extension_degrees=178.0)
+
+        evaluations = comparator.compare_with_reference(biomechanics)
+        knee_eval = next(
+            e for e in evaluations
+            if e.metric_name == "front_knee_extension_degrees"
+        )
+
+        assert knee_eval.rating == MetricRating.WITHIN_RANGE
+        assert knee_eval.color_code == "green"
+        assert knee_eval.reference_min == 155.0
+        assert knee_eval.reference_max == 180.0
+
+    def test_front_knee_extension_falls_back_to_legacy_field(
+        self, comparator: ReferenceComparator
+    ):
+        """Legacy API field is still interpreted as the same extension angle."""
+        biomechanics = BiomechanicsResult(front_knee_flexion_degrees=166.0)
+
+        evaluations = comparator.compare_with_reference(biomechanics)
+        knee_eval = next(
+            e for e in evaluations
+            if e.metric_name == "front_knee_extension_degrees"
+        )
+
+        assert knee_eval.measured_value == 166.0
+        assert knee_eval.rating == MetricRating.WITHIN_RANGE

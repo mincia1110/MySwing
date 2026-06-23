@@ -146,16 +146,19 @@ class PixelCalibrator:
             )
 
         coordinate_space = getattr(bat_detection, "coordinate_space", "pixel")
-        if coordinate_space != "pixel":
+        if coordinate_space not in {"pixel", "normalized"}:
             raise CalibrationError(
-                "Bat length verification requires pixel coordinate space; "
+                "Bat length verification requires pixel or normalized coordinate space; "
                 f"got '{coordinate_space}'."
             )
 
         if pixel_to_meter <= 0:
             raise CalibrationError("Pixel-to-meter ratio must be positive.")
 
-        # Convert detected bat length from pixels to meters
+        # Convert detected bat length from the same coordinate space used by
+        # the calibration ratio. The pipeline normally works in normalized
+        # MediaPipe coordinates even though the legacy field is named
+        # length_pixels.
         bat_length_detected_meters = bat_detection.length_pixels * pixel_to_meter
 
         # Calculate discrepancy
@@ -1390,6 +1393,64 @@ class BiomechanicsOrchestrator:
 
         return bat_length_meters / median_length
 
+    @staticmethod
+    def _mark_metric_unmeasurable(
+        result: BiomechanicsResult,
+        unmeasurable_metrics: list[UnmeasurableMetric],
+        metric_name: str,
+        reason: str,
+    ) -> None:
+        setattr(result, metric_name, None)
+        unmeasurable_metrics.append(
+            UnmeasurableMetric(metric_name=metric_name, reason=reason)
+        )
+
+    def _apply_swing_quality_sanity_guards(
+        self,
+        result: BiomechanicsResult,
+        unmeasurable_metrics: list[UnmeasurableMetric],
+        user_height_cm: float,
+    ) -> None:
+        """Drop anthropometric metrics that are not credible for the clip."""
+        if user_height_cm <= 0:
+            return
+
+        limits = {
+            "stride_length_cm": (
+                user_height_cm * 0.90,
+                "Estimated stride exceeds 90% of body height; likely partial/cropped tracking",
+            ),
+            "cog_sway_cm": (
+                user_height_cm * 0.35,
+                "Estimated center-of-gravity sway exceeds 35% of body height; "
+                "likely camera/tracking artifact",
+            ),
+            "head_stability_cm": (
+                user_height_cm * 0.20,
+                "Estimated head movement exceeds 20% of body height; "
+                "likely camera/tracking artifact",
+            ),
+        }
+
+        for metric_name, (max_value, reason) in limits.items():
+            value = getattr(result, metric_name, None)
+            if value is not None and value > max_value:
+                self._mark_metric_unmeasurable(
+                    result, unmeasurable_metrics, metric_name, reason
+                )
+
+        if (
+            result.hand_path_efficiency is not None
+            and result.hand_path_efficiency > 0.0
+            and result.hand_path_efficiency < 0.05
+        ):
+            self._mark_metric_unmeasurable(
+                result,
+                unmeasurable_metrics,
+                "hand_path_efficiency",
+                "Hand path efficiency below measurable floor; likely phase/tracking artifact",
+            )
+
     def analyze(
         self,
         pose_sequence: List[PoseResult],
@@ -1647,10 +1708,16 @@ class BiomechanicsOrchestrator:
             result.cog_sway_cm = sq.cog_sway_cm(pose_sequence, swing_phases, pixel_to_meter)
             result.cog_drop_cm = sq.cog_drop_cm(pose_sequence, swing_phases, pixel_to_meter)
             result.head_stability_cm = sq.head_stability_cm(pose_sequence, pixel_to_meter)
-            result.front_knee_flexion_degrees = sq.front_knee_flexion_degrees(
+            front_knee_extension = sq.front_knee_flexion_degrees(
                 pose_sequence, swing_phases, batting_direction=batting_direction
             )
+            result.front_knee_extension_degrees = front_knee_extension
+            result.front_knee_flexion_degrees = front_knee_extension
             result.spine_angle_degrees = sq.spine_angle_degrees(pose_sequence, swing_phases)
+
+        self._apply_swing_quality_sanity_guards(
+            result, unmeasurable_metrics, user_height_cm
+        )
 
         return self._finalize_result(result, unmeasurable_metrics, start_time, timeout=False)
 
@@ -1843,7 +1910,12 @@ class SwingQualityAnalyzer:
         return p95 * pixel_to_meter * 100.0
 
     def front_knee_flexion_degrees(self, pose_sequence, swing_phases, batting_direction="right"):
-        """Compute lead/front knee angle at stride landing (degrees)."""
+        """Compute lead/front knee extension angle at stride landing (degrees).
+
+        This returns the three-point hip-knee-ankle joint angle. Larger values
+        mean a more extended/braced front leg, with 180° near full extension.
+        The historical method name is kept for compatibility.
+        """
         stride_end = swing_phases.get("stride_end_frame")
         if stride_end is None:
             return None
