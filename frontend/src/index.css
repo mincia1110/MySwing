@@ -9,6 +9,122 @@ body {
 
 #root {
   min-height: 100vh;
-  padding: 24px;
+  width: 100%;
   box-sizing: border-box;
+}
+
+.language-switcher {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1rem 1rem 0;
+}
+
+.language-switcher__button,
+.button {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: none;
+}
+
+.language-switcher__button {
+  padding: 0.4rem 0.75rem;
+  background: #ffffff;
+  color: #111827;
+}
+
+.language-switcher__button--active {
+  background: #111827;
+  color: #ffffff;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.page h1,
+.page p {
+  word-break: keep-all;
+}
+
+.page h1 {
+  font-size: 2rem;
+  line-height: 1.15;
+}
+
+.page--upload {
+  max-width: 800px;
+}
+
+.page__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.page__title {
+  margin: 0;
+}
+
+.page__actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.page__error {
+  color: #b91c1c;
+  margin-top: 0.5rem;
+}
+
+.page__loading {
+  padding: 2rem;
+  text-align: center;
+}
+
+.button {
+  display: inline-block;
+  padding: 0.6rem 1.2rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.button--primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+.button--secondary {
+  background: #6b7280;
+  border-color: #6b7280;
+  color: #ffffff;
+}
+
+.upload-page__uploaded-video {
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 560px) {
+  .page h1 {
+    font-size: 1.75rem;
+  }
+
+  .page__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }

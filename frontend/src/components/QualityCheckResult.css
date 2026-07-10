@@ -66,3 +66,17 @@
   color: #92400e;
   font-size: 13px;
 }
+
+@media (max-width: 560px) {
+  .quality-check {
+    padding: 12px;
+  }
+
+  .quality-check__item {
+    grid-template-columns: 1fr auto;
+  }
+
+  .quality-check__value {
+    grid-column: 1 / -1;
+  }
+}

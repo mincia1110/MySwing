@@ -73,3 +73,17 @@
   color: #6b7280;
   font-size: 14px;
 }
+
+@media (max-width: 560px) {
+  .improvements {
+    padding: 12px;
+  }
+
+  .improvements__item {
+    grid-template-columns: auto 1fr;
+  }
+
+  .improvements__deviation {
+    grid-column: 2;
+  }
+}

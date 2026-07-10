@@ -36,12 +36,14 @@
   margin: 0;
   font-size: 16px;
   color: #111827;
+  word-break: keep-all;
 }
 
 .video-uploader__formats {
   margin: 6px 0 0;
   font-size: 12px;
   color: #6b7280;
+  word-break: keep-all;
 }
 
 .video-uploader__status,

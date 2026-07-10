@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { TrendChart } from "./TrendChart";
 import type { TrendDataResponse } from "../types/analysis";
@@ -73,6 +74,32 @@ describe("TrendChart", () => {
     expect(
       screen.getByTestId("trend-chart-metric-launch_angle"),
     ).toHaveAttribute("data-points", "2");
+    expect(screen.getByTestId("trend-chart-change-bat_speed")).toHaveTextContent(
+      "최근 변화 +5.0",
+    );
+  });
+
+  it("can filter to one metric", async () => {
+    const user = userEvent.setup();
+    const data: TrendDataResponse = {
+      metrics_history: {
+        bat_speed: [
+          makePoint("2025-01-01T00:00:00Z", 100),
+          makePoint("2025-01-02T00:00:00Z", 110),
+        ],
+        launch_angle: [
+          makePoint("2025-01-01T00:00:00Z", 22),
+          makePoint("2025-01-02T00:00:00Z", 18),
+        ],
+      },
+      total_recordings: 2,
+    };
+    render(<TrendChart trendData={data} />);
+
+    await user.selectOptions(screen.getByTestId("trend-chart-selector"), "launch_angle");
+
+    expect(screen.queryByTestId("trend-chart-metric-bat_speed")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trend-chart-metric-launch_angle")).toBeInTheDocument();
   });
 
   it("limits to the most recent 30 points", () => {

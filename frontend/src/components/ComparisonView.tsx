@@ -86,6 +86,11 @@ export function ComparisonView({
   const { t } = useTranslation();
   const rows = buildRows(userPhases, referencePhases);
   const resolvedTitle = title ?? t("comparison.title");
+  const phaseLabel = (phase: string) => {
+    const key = `phases.${phase}`;
+    const label = t(key);
+    return label === key ? phase : label;
+  };
   const maxMs = Math.max(
     1,
     ...rows.flatMap((r) => [r.user_ms ?? 0, r.reference_ms ?? 0]),
@@ -130,7 +135,7 @@ export function ComparisonView({
                 key={row.phase}
                 data-testid={`comparison-row-${row.phase}`}
               >
-                <th scope="row">{row.phase}</th>
+                <th scope="row">{phaseLabel(row.phase)}</th>
                 <td data-testid={`comparison-user-${row.phase}`}>
                   {row.user_ms === null ? "-" : row.user_ms.toFixed(0)}
                 </td>
@@ -141,7 +146,9 @@ export function ComparisonView({
                   <div className="comparison-view__bars">
                     <div
                       className="comparison-view__bar"
-                      aria-label={t("comparison.userDuration", { phase: row.phase })}
+                      aria-label={t("comparison.userDuration", {
+                        phase: phaseLabel(row.phase),
+                      })}
                     >
                       <div
                         className="comparison-view__bar-fill comparison-view__bar-fill--user"
@@ -156,7 +163,9 @@ export function ComparisonView({
                     </div>
                     <div
                       className="comparison-view__bar"
-                      aria-label={t("comparison.referenceDuration", { phase: row.phase })}
+                      aria-label={t("comparison.referenceDuration", {
+                        phase: phaseLabel(row.phase),
+                      })}
                     >
                       <div
                         className="comparison-view__bar-fill comparison-view__bar-fill--reference"

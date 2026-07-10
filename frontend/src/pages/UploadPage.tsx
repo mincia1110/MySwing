@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createAnalysis } from "../api/analysis";
 import { UserProfileForm } from "../components/UserProfileForm";
+import { VideoMetadataDisplay } from "../components/VideoMetadataDisplay";
 import { VideoUploader } from "../components/VideoUploader";
 import { useTranslation } from "../i18n";
 import type { VideoMetadataWithThumbnailResponse } from "../types/video";
@@ -13,7 +14,7 @@ export function UploadPage() {
   const { t } = useTranslation();
   const [step, setStep] = useState<Step>("upload");
   const [fileKey, setFileKey] = useState<string | null>(null);
-  const [, setMetadata] = useState<VideoMetadataWithThumbnailResponse | null>(null);
+  const [metadata, setMetadata] = useState<VideoMetadataWithThumbnailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
 
@@ -54,7 +55,7 @@ export function UploadPage() {
   }, [handleStartAnalysis]);
 
   return (
-    <main style={{ maxWidth: 800, margin: "0 auto", padding: "2rem 1rem" }}>
+    <main className="page page--upload">
       <h1>{t("uploadPage.title")}</h1>
 
       {step === "upload" && (
@@ -69,34 +70,38 @@ export function UploadPage() {
 
       {step === "profile" && (
         <>
+          {metadata ? (
+            <section
+              className="upload-page__uploaded-video"
+              aria-label={t("uploadPage.uploadedVideo")}
+            >
+              <h2>{t("uploadPage.uploadedVideo")}</h2>
+              <VideoMetadataDisplay metadata={metadata} />
+            </section>
+          ) : null}
           <h2>{t("uploadPage.profileTitle")}</h2>
           <p>{t("uploadPage.profileIntro")}</p>
           <UserProfileForm onSaved={handleProfileSaved} />
-          <div style={{ marginTop: "1rem", display: "flex", gap: "1rem" }}>
+          <div className="page__actions">
             <button
               type="button"
               onClick={handleSkipProfile}
               disabled={isStarting}
-              style={{
-                padding: "0.75rem 1.5rem",
-                backgroundColor: "#6c757d",
-                color: "white",
-                border: "none",
-                borderRadius: "4px",
-                cursor: isStarting ? "not-allowed" : "pointer",
-              }}
+              className="button button--secondary"
             >
               {t("uploadPage.skipAndStart")}
             </button>
           </div>
           {error && (
-            <p style={{ color: "red", marginTop: "0.5rem" }}>{error}</p>
+            <p className="page__error" role="alert">
+              {error}
+            </p>
           )}
         </>
       )}
 
       {step === "starting" && (
-        <div style={{ textAlign: "center", padding: "2rem" }}>
+        <div className="page__loading">
           <p>{t("uploadPage.starting")}</p>
         </div>
       )}

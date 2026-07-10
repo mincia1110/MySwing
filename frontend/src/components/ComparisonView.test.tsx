@@ -57,6 +57,9 @@ describe("ComparisonView", () => {
   it("uses default reference set when none is supplied", () => {
     render(<ComparisonView userPhases={userPhases} />);
     expect(screen.getByTestId("comparison-row-impact")).toBeInTheDocument();
+    expect(screen.getByTestId("comparison-row-follow_through")).toHaveTextContent(
+      "팔로스루",
+    );
   });
 
   it("renders an empty state when both arrays are empty", () => {

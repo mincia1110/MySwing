@@ -60,6 +60,13 @@ function formatCreatedAt(iso: string): string {
 export function AnalysisReport({ report, trendData }: AnalysisReportProps) {
   const { t } = useTranslation();
   const effectiveTrendData = trendData ?? report.trend_data ?? null;
+  const qualityCheck = isQualityCheckResponse(report.quality_check)
+    ? report.quality_check
+    : null;
+  const overlayFps =
+    report.analysis_metadata.video_normalization?.analysis_fps ??
+    report.analysis_metadata.video_normalization?.original_fps ??
+    30;
 
   return (
     <article
@@ -76,15 +83,22 @@ export function AnalysisReport({ report, trendData }: AnalysisReportProps) {
         </span>
       </header>
 
-      <OverlayVideoPlayer videoUrl={report.overlay_video_url} />
+      <div className="analysis-report__hero" data-testid="analysis-report-hero">
+        <OverlayVideoPlayer
+          videoUrl={report.overlay_video_url}
+          phases={report.swing_phases}
+          fps={overlayFps}
+        />
+        {qualityCheck ? <QualityCheckResult result={qualityCheck} /> : null}
+      </div>
 
-      {isQualityCheckResponse(report.quality_check) ? (
-        <QualityCheckResult result={report.quality_check} />
-      ) : null}
-
-      <MetricsTable metrics={report.metric_evaluations} />
-
-      <ImprovementAreasList improvements={report.improvements} />
+      <div
+        className="analysis-report__insights"
+        data-testid="analysis-report-insights"
+      >
+        <MetricsTable metrics={report.metric_evaluations} />
+        <ImprovementAreasList improvements={report.improvements} />
+      </div>
 
       <section
         className="analysis-report__section"

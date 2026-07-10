@@ -28,6 +28,7 @@ const ko = {
     profileTitle: "사용자 프로필",
     profileIntro:
       "정확한 분석을 위해 프로필 정보를 입력하세요. 건너뛰기를 누르면 기본값으로 분석합니다.",
+    uploadedVideo: "업로드한 영상",
     skipAndStart: "건너뛰고 분석 시작",
     starting: "분석을 시작하는 중...",
     startError: "분석 시작에 실패했습니다.",
@@ -142,6 +143,8 @@ const ko = {
     aria: "오버레이 비디오 플레이어",
     unsupported: "이 브라우저는 비디오 재생을 지원하지 않습니다.",
     unavailable: "오버레이 비디오를 사용할 수 없습니다.",
+    phases: "구간",
+    jumpToPhase: "{phase} 구간으로 이동",
   },
   metrics: {
     title: "메트릭",
@@ -181,6 +184,14 @@ const ko = {
     userDuration: "사용자 {phase} 지속시간",
     referenceDuration: "프로 {phase} 지속시간",
   },
+  phases: {
+    stance: "준비",
+    load: "로드",
+    stride: "스트라이드",
+    rotation: "회전",
+    impact: "임팩트",
+    follow_through: "팔로스루",
+  },
   improvements: {
     title: "개선이 필요한 영역 (상위 3개)",
     aria: "개선이 필요한 영역",
@@ -196,6 +207,10 @@ const ko = {
       "트렌드 분석을 위해서는 최소 {min}회 이상의 분석 기록이 필요합니다 (현재 {total}회).",
     empty: "트렌드 데이터가 없습니다.",
     chartAria: "{metric} 추이 차트",
+    metric: "메트릭",
+    allMetrics: "전체",
+    dateRange: "{start} - {end}",
+    latestChange: "최근 변화 {value}",
   },
   quality: {
     aria: "비디오 품질 검증 결과",
@@ -234,6 +249,7 @@ const en = {
     profileTitle: "User Profile",
     profileIntro:
       "Enter profile details for a more accurate analysis. If you skip this step, default values will be used.",
+    uploadedVideo: "Uploaded Video",
     skipAndStart: "Skip and Start Analysis",
     starting: "Starting analysis...",
     startError: "Failed to start analysis.",
@@ -347,6 +363,8 @@ const en = {
     aria: "Overlay video player",
     unsupported: "This browser does not support video playback.",
     unavailable: "Overlay video is unavailable.",
+    phases: "Phases",
+    jumpToPhase: "Jump to {phase}",
   },
   metrics: {
     title: "Metrics",
@@ -386,6 +404,14 @@ const en = {
     userDuration: "User {phase} duration",
     referenceDuration: "Pro {phase} duration",
   },
+  phases: {
+    stance: "Stance",
+    load: "Load",
+    stride: "Stride",
+    rotation: "Rotation",
+    impact: "Impact",
+    follow_through: "Follow Through",
+  },
   improvements: {
     title: "Top Improvement Areas",
     aria: "Improvement areas",
@@ -401,6 +427,10 @@ const en = {
       "At least {min} analysis records are required for trend analysis (currently {total}).",
     empty: "No trend data.",
     chartAria: "{metric} trend chart",
+    metric: "Metric",
+    allMetrics: "All",
+    dateRange: "{start} - {end}",
+    latestChange: "Latest change {value}",
   },
   quality: {
     aria: "Video quality check result",

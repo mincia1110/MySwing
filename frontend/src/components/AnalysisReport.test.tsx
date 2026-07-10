@@ -78,6 +78,8 @@ describe("AnalysisReport", () => {
     );
     expect(screen.getByTestId("overlay-video")).toBeInTheDocument();
     expect(screen.getByTestId("quality-check")).toBeInTheDocument();
+    expect(screen.getByTestId("analysis-report-hero")).toBeInTheDocument();
+    expect(screen.getByTestId("analysis-report-insights")).toBeInTheDocument();
     expect(screen.getByTestId("quality-check-framing")).toHaveAttribute(
       "data-status",
       "warning",

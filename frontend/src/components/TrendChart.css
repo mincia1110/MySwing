@@ -18,6 +18,34 @@
   margin-bottom: 6px;
 }
 
+.trend-chart__selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #4b5563;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.trend-chart__selector select {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+  padding: 4px 8px;
+}
+
+.trend-chart__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: -2px 0 8px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
 .trend-chart__svg {
   width: 100%;
   max-width: 600px;

@@ -4,6 +4,7 @@
   padding: 12px 16px;
   background: #ffffff;
   font-family: system-ui, sans-serif;
+  overflow-x: auto;
 }
 
 .comparison-view__title {
@@ -39,6 +40,7 @@
 
 .comparison-view__table {
   width: 100%;
+  min-width: 620px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -49,6 +51,13 @@
   padding: 6px 8px;
   border-bottom: 1px solid #f3f4f6;
   font-variant-numeric: tabular-nums;
+}
+
+.comparison-view__table th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #ffffff;
 }
 
 .comparison-view__bar-cell {
@@ -84,4 +93,10 @@
   text-align: center;
   color: #6b7280;
   font-size: 14px;
+}
+
+@media (max-width: 640px) {
+  .comparison-view {
+    padding: 12px;
+  }
 }

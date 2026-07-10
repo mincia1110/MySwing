@@ -5,9 +5,10 @@
  * - When `totalRecordings` < `MIN_RECORDINGS_FOR_TREND` (2), the chart is
  *   replaced with a message indicating the minimum number of recordings
  *   required for trend analysis.
- * - Otherwise renders a polyline of values per metric over time, capped to
- *   the most recent `MAX_TREND_RECORDINGS` (30) points.
+ * - Otherwise renders selected metric polylines over time, capped to the most
+ *   recent `MAX_TREND_RECORDINGS` (30) points.
  */
+import { useState } from "react";
 import {
   MAX_TREND_RECORDINGS,
   MIN_RECORDINGS_FOR_TREND,
@@ -82,6 +83,20 @@ function pickRecentPoints(
   return sorted.slice(sorted.length - MAX_TREND_RECORDINGS);
 }
 
+function formatChange(value: number): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(1)}`;
+}
+
+function formatShortDate(iso: string, language: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(language === "ko" ? "ko-KR" : "en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function MinRecordingsMessage({
   message,
   fallback,
@@ -105,6 +120,7 @@ export function TrendChart({
   title,
 }: TrendChartProps) {
   const { language, t } = useTranslation();
+  const [selectedMetric, setSelectedMetric] = useState("all");
   const total = trendData.total_recordings;
   const resolvedTitle = title ?? t("trend.title");
 
@@ -130,6 +146,10 @@ export function TrendChart({
 
   const allMetricNames = metricNames ?? Object.keys(trendData.metrics_history);
   const geom = computeGeometry(width, height);
+  const visibleMetricNames =
+    selectedMetric === "all" || !allMetricNames.includes(selectedMetric)
+      ? allMetricNames
+      : [selectedMetric];
 
   if (allMetricNames.length === 0) {
     return (
@@ -156,7 +176,24 @@ export function TrendChart({
       data-total-recordings={total}
     >
       <h3 className="trend-chart__title">{resolvedTitle}</h3>
-      {allMetricNames.map((metricName) => {
+      {allMetricNames.length > 1 ? (
+        <label className="trend-chart__selector">
+          <span>{t("trend.metric")}</span>
+          <select
+            value={selectedMetric}
+            onChange={(event) => setSelectedMetric(event.target.value)}
+            data-testid="trend-chart-selector"
+          >
+            <option value="all">{t("trend.allMetrics")}</option>
+            {allMetricNames.map((metricName) => (
+              <option key={metricName} value={metricName}>
+                {metricName}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {visibleMetricNames.map((metricName) => {
         const rawPoints = trendData.metrics_history[metricName] ?? [];
         const points = pickRecentPoints(rawPoints);
         if (points.length === 0) return null;
@@ -165,6 +202,10 @@ export function TrendChart({
         const minVal = Math.min(...values);
         const maxVal = Math.max(...values);
         const { path, coords } = buildPath(points, geom, minVal, maxVal);
+        const latestChange =
+          points.length > 1
+            ? points[points.length - 1].value - points[points.length - 2].value
+            : null;
 
         return (
           <div
@@ -173,6 +214,21 @@ export function TrendChart({
             data-points={points.length}
           >
             <p className="trend-chart__metric-name">{metricName}</p>
+            <p className="trend-chart__meta">
+              <span>
+                {t("trend.dateRange", {
+                  start: formatShortDate(points[0].recorded_at, language),
+                  end: formatShortDate(points[points.length - 1].recorded_at, language),
+                })}
+              </span>
+              {latestChange !== null ? (
+                <span data-testid={`trend-chart-change-${metricName}`}>
+                  {t("trend.latestChange", {
+                    value: formatChange(latestChange),
+                  })}
+                </span>
+              ) : null}
+            </p>
             <svg
               className="trend-chart__svg"
               viewBox={`0 0 ${geom.width} ${geom.height}`}

@@ -46,3 +46,9 @@
   color: #111827;
   word-break: break-all;
 }
+
+@media (max-width: 560px) {
+  .video-metadata {
+    grid-template-columns: 1fr;
+  }
+}

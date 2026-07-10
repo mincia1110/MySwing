@@ -7,28 +7,17 @@ function LanguageSwitcher() {
   const { language, setLanguage, t } = useTranslation();
 
   return (
-    <div
-      aria-label={t("app.language")}
-      style={{
-        display: "flex",
-        justifyContent: "flex-end",
-        gap: "0.5rem",
-        maxWidth: 960,
-        margin: "0 auto",
-        padding: "1rem 1rem 0",
-      }}
-    >
+    <div aria-label={t("app.language")} className="language-switcher">
       <button
         type="button"
         onClick={() => setLanguage("ko")}
         aria-pressed={language === "ko"}
-        style={{
-          padding: "0.4rem 0.75rem",
-          border: "1px solid #d1d5db",
-          borderRadius: 4,
-          background: language === "ko" ? "#111827" : "#fff",
-          color: language === "ko" ? "#fff" : "#111827",
-        }}
+        className={[
+          "language-switcher__button",
+          language === "ko" ? "language-switcher__button--active" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
       >
         {t("app.korean")}
       </button>
@@ -36,13 +25,12 @@ function LanguageSwitcher() {
         type="button"
         onClick={() => setLanguage("en")}
         aria-pressed={language === "en"}
-        style={{
-          padding: "0.4rem 0.75rem",
-          border: "1px solid #d1d5db",
-          borderRadius: 4,
-          background: language === "en" ? "#111827" : "#fff",
-          color: language === "en" ? "#fff" : "#111827",
-        }}
+        className={[
+          "language-switcher__button",
+          language === "en" ? "language-switcher__button--active" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
       >
         {t("app.english")}
       </button>

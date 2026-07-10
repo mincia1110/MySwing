@@ -77,7 +77,7 @@ export function AnalysisPage() {
 
   if (!analysisId) {
     return (
-      <main style={{ maxWidth: 960, margin: "0 auto" }}>
+      <main className="page page--analysis">
         <h1>{t("analysisPage.title")}</h1>
         <p role="alert" data-testid="analysis-page-missing-id">
           {t("analysisPage.missingId")}
@@ -87,20 +87,12 @@ export function AnalysisPage() {
   }
 
   return (
-    <main style={{ maxWidth: 960, margin: "0 auto", padding: "2rem 1rem" }} data-testid="analysis-page">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-        <h1 style={{ margin: 0 }}>{t("analysisPage.title")}</h1>
+    <main className="page page--analysis" data-testid="analysis-page">
+      <div className="page__header">
+        <h1 className="page__title">{t("analysisPage.title")}</h1>
         <Link
           to="/"
-          style={{
-            padding: "0.6rem 1.2rem",
-            backgroundColor: "#2563eb",
-            color: "white",
-            textDecoration: "none",
-            borderRadius: "6px",
-            fontSize: "0.9rem",
-            fontWeight: 500,
-          }}
+          className="button button--primary"
         >
           {t("analysisPage.newAnalysis")}
         </Link>
@@ -120,21 +112,13 @@ export function AnalysisPage() {
           <p
             role="alert"
             data-testid="analysis-page-error"
-            style={{ color: "#b91c1c" }}
+            className="page__error"
           >
             {error}
           </p>
           <Link
             to="/"
-            style={{
-              display: "inline-block",
-              marginTop: "1rem",
-              padding: "0.6rem 1.2rem",
-              backgroundColor: "#2563eb",
-              color: "white",
-              textDecoration: "none",
-              borderRadius: "6px",
-            }}
+            className="button button--primary"
           >
             {t("analysisPage.retry")}
           </Link>

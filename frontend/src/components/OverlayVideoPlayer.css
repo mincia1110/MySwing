@@ -20,6 +20,39 @@
   display: block;
 }
 
+.overlay-video__phases {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.overlay-video__phases-label {
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.overlay-video__phase-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.overlay-video__phase-button {
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #111827;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.overlay-video__phase-button:hover {
+  background: #f3f4f6;
+}
+
 .overlay-video__placeholder {
   padding: 24px;
   text-align: center;
