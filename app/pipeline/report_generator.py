@@ -14,7 +14,6 @@ import logging
 import math
 import os
 import subprocess
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -27,6 +26,7 @@ from app.models.evaluation import DrillRecommendation, ImprovementArea, MetricEv
 from app.models.pose import Keypoint, PoseResult
 from app.models.report import MetricDataPoint, TrendData
 from app.models.swing import SwingPhaseResult
+from app.pipeline.biomechanics_analyzer import _bat_detection_in_pixels
 from app.services.s3_client import S3Client
 
 logger = logging.getLogger(__name__)
@@ -276,10 +276,14 @@ class OverlayRenderer:
         if not bat_trajectory.detections:
             return frame
 
-        # Build detection lookup by frame index
+        # Build a pixel-coordinate lookup for drawing. Production wrist/pose
+        # trackers emit normalized detections, while detector results are pixels.
+        height, width = frame.shape[:2]
         det_by_frame: Dict[int, BatDetectionResult] = {}
         for det in bat_trajectory.detections:
-            det_by_frame[det.frame_index] = det
+            det_by_frame[det.frame_index] = _bat_detection_in_pixels(
+                det, width, height
+            )
 
         # Draw trailing path (last BAT_TRAIL_MAX_FRAMES frames)
         trail_start = max(0, current_frame - BAT_TRAIL_MAX_FRAMES + 1)
@@ -1088,7 +1092,11 @@ class ComparisonViewBuilder:
 
             difference_ms: Optional[float] = None
             difference_percent: Optional[float] = None
-            if user_duration is not None and reference_duration is not None and reference_duration > 0:
+            if (
+                user_duration is not None
+                and reference_duration is not None
+                and reference_duration > 0
+            ):
                 difference_ms = user_duration - reference_duration
                 difference_percent = (difference_ms / reference_duration) * 100.0
 
@@ -1098,8 +1106,16 @@ class ComparisonViewBuilder:
                     "user_duration_ms": user_duration,
                     "reference_duration_ms": reference_duration,
                     "difference_ms": difference_ms,
-                    "difference_percent": round(difference_percent, 1) if difference_percent is not None else None,
-                    "is_significant": abs(difference_percent) > 20.0 if difference_percent is not None else False,
+                    "difference_percent": (
+                        round(difference_percent, 1)
+                        if difference_percent is not None
+                        else None
+                    ),
+                    "is_significant": (
+                        abs(difference_percent) > 20.0
+                        if difference_percent is not None
+                        else False
+                    ),
                 }
             )
 

@@ -505,7 +505,8 @@ class ModernPrinciplesEvaluator:
             else:
                 break
 
-        duration_ms = (in_zone_frames / fps) * 1000.0
+        # N frame samples span N - 1 elapsed frame intervals.
+        duration_ms = (max(0, in_zone_frames - 1) / fps) * 1000.0
         passed = duration_ms >= BARREL_IN_ZONE_MIN_MS
 
         return {

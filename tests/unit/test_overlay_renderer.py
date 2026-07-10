@@ -7,10 +7,9 @@ Tests:
 - Empty pose/trajectory graceful handling
 """
 
-import math
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
@@ -251,6 +250,33 @@ class TestDrawBatTrajectory:
         )
         # Frame should be modified (trail + current bat drawn)
         assert not np.array_equal(result, np.zeros_like(sample_frame))
+
+    def test_normalized_bat_is_drawn_in_frame_pixel_space(
+        self, renderer: OverlayRenderer, sample_frame: np.ndarray
+    ):
+        """Normalized center/head/length must not collapse into the top-left pixel."""
+        trajectory = BatTrajectory(
+            detections=[
+                BatDetectionResult(
+                    frame_index=0,
+                    detected=True,
+                    position=(0.5, 0.5),
+                    orientation_angle=0.0,
+                    length_pixels=0.25,
+                    confidence=0.9,
+                    is_predicted=True,
+                    coordinate_space="normalized",
+                    bat_head_position=(0.625, 0.5),
+                )
+            ]
+        )
+
+        result = renderer._draw_bat_trajectory(
+            sample_frame, trajectory, current_frame=0
+        )
+
+        assert result[240, 320].any()
+        assert not result[:10, :10].any()
 
 
 class TestRenderOverlayVideo:

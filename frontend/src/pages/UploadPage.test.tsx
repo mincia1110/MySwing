@@ -61,5 +61,11 @@ describe("UploadPage", () => {
       "swing.mp4",
     );
     expect(screen.getByTestId("mock-profile-form")).toBeInTheDocument();
+    expect(
+      screen.getByText("분석을 시작하려면 프로필 정보를 입력하세요."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "건너뛰고 분석 시작" }),
+    ).not.toBeInTheDocument();
   });
 });

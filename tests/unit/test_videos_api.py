@@ -104,6 +104,41 @@ class TestGetVideoMetadataInputPolicy:
     @patch("app.api.videos.extract_metadata")
     @patch("app.api.videos.get_s3_client")
     @patch("app.api.videos.async_session_factory")
+    def test_metadata_returns_service_unavailable_when_database_save_fails(
+        self,
+        mock_session_factory,
+        mock_get_s3_client,
+        mock_extract_metadata,
+        mock_generate_thumbnail,
+        client,
+    ):
+        """A successful decode must not hide a missing video database row."""
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": 1024}
+        mock_s3._client.download_file.return_value = None
+        mock_s3._bucket = "myswing-videos"
+        mock_get_s3_client.return_value = mock_s3
+        mock_extract_metadata.return_value = _metadata()
+        mock_generate_thumbnail.return_value = "thumbs/swing.jpg"
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=_mock_scalar_result(None))
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock(side_effect=ConnectionError("database unavailable"))
+        mock_session_factory.return_value = _SessionFactory(mock_session)
+
+        response = client.post(
+            "/api/v1/videos/uploads/test/swing.mp4/metadata",
+            headers={"X-User-Id": str(uuid.uuid4())},
+        )
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Video metadata could not be saved. Please retry."
+
+    @patch("app.api.videos.generate_thumbnail_from_s3")
+    @patch("app.api.videos.extract_metadata")
+    @patch("app.api.videos.get_s3_client")
+    @patch("app.api.videos.async_session_factory")
     def test_metadata_rejects_video_owned_by_another_user(
         self,
         mock_session_factory,

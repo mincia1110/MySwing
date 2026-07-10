@@ -60,6 +60,18 @@ const DEFAULT_MIME_TYPES = [
 // Allowed file extensions (fallback when MIME type is empty or generic)
 const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi"];
 
+function fileExtension(file: File): string {
+  return `.${file.name.split(".").pop()?.toLowerCase()}`;
+}
+
+function resolvedContentType(file: File): string {
+  if (file.type && file.type !== "application/octet-stream") return file.type;
+  const ext = fileExtension(file);
+  if (ext === ".mov") return "video/quicktime";
+  if (ext === ".avi") return "video/x-msvideo";
+  return "video/mp4";
+}
+
 type UploadStage =
   | "idle"
   | "preparing"
@@ -152,15 +164,17 @@ export function VideoUploader({
   const [state, setState] = useState<UploadState>(INITIAL_STATE);
   const [isDragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const uploadInProgressRef = useRef(false);
 
   const validateFile = useCallback(
     (file: File): string | null => {
-      // Check MIME type first; if empty/generic, fall back to extension check
-      const mimeOk = acceptedMimeTypes.length === 0 || acceptedMimeTypes.includes(file.type);
-      const ext = "." + file.name.split(".").pop()?.toLowerCase();
+      const contentType = resolvedContentType(file);
+      const mimeOk =
+        acceptedMimeTypes.length === 0 || acceptedMimeTypes.includes(contentType);
+      const ext = fileExtension(file);
       const extOk = ALLOWED_EXTENSIONS.includes(ext);
 
-      if (!mimeOk && !extOk) {
+      if (!mimeOk || !extOk) {
         return t("uploader.unsupportedType", { type: file.type || ext });
       }
       if (file.size > maxFileSizeBytes) {
@@ -189,6 +203,16 @@ export function VideoUploader({
         return;
       }
 
+      setState({
+        stage: "preparing",
+        percent: 0,
+        fileName: file.name,
+        errorMessage: null,
+        warningMessage: null,
+        metadata: null,
+        fileKey: null,
+      });
+
       const duration = await readVideoDuration(file);
       if (duration != null && duration > MAX_DURATION_SEC) {
         const errorMessage = t("uploader.durationTooLong");
@@ -210,30 +234,14 @@ export function VideoUploader({
           ? t("uploader.durationWarning")
           : null;
 
-      setState({
-        stage: "preparing",
-        percent: 0,
-        fileName: file.name,
-        errorMessage: null,
-        warningMessage,
-        metadata: null,
-        fileKey: null,
-      });
+      setState((prev) => ({ ...prev, warningMessage }));
 
       let presigned: PresignedUrlResponse;
-      let resolvedContentType = "";
+      const contentType = resolvedContentType(file);
       try {
-        // Determine content_type: use file.type if available, otherwise infer from extension
-        resolvedContentType = file.type;
-        if (!resolvedContentType) {
-          const ext = file.name.split(".").pop()?.toLowerCase();
-          if (ext === "mov") resolvedContentType = "video/quicktime";
-          else if (ext === "avi") resolvedContentType = "video/x-msvideo";
-          else resolvedContentType = "video/mp4";
-        }
         presigned = await getPresignedUrl({
           file_name: file.name,
-          content_type: resolvedContentType,
+          content_type: contentType,
         });
       } catch (err) {
         const error =
@@ -251,7 +259,7 @@ export function VideoUploader({
 
       try {
         await uploadToS3(presigned.upload_url, file, {
-          contentType: resolvedContentType,
+          contentType,
           onProgress: (event: UploadProgressEvent) => {
             setState((prev) =>
               prev.stage === "uploading"
@@ -321,16 +329,27 @@ export function VideoUploader({
     [onUploadComplete, onUploadError, t, validateFile],
   );
 
+  const queueUpload = useCallback(
+    (file: File) => {
+      if (uploadInProgressRef.current) return;
+      uploadInProgressRef.current = true;
+      void startUpload(file).finally(() => {
+        uploadInProgressRef.current = false;
+      });
+    },
+    [startUpload],
+  );
+
   const handleFileInput = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (file) {
-        void startUpload(file);
+        queueUpload(file);
       }
       // Allow re-uploading the same file by clearing the input value.
       event.target.value = "";
     },
-    [startUpload],
+    [queueUpload],
   );
 
   const handleDrop = useCallback(
@@ -339,10 +358,10 @@ export function VideoUploader({
       setDragOver(false);
       const file = event.dataTransfer.files?.[0];
       if (file) {
-        void startUpload(file);
+        queueUpload(file);
       }
     },
-    [startUpload],
+    [queueUpload],
   );
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {

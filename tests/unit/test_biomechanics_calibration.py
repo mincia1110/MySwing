@@ -21,6 +21,8 @@ from app.pipeline.biomechanics_analyzer import (
     BiomechanicsOrchestrator,
     CalibrationError,
     PixelCalibrator,
+    _bat_trajectory_in_pixels,
+    _pose_sequence_in_pixels,
 )
 
 # --- Helper functions ---
@@ -111,6 +113,17 @@ class TestPixelCalibratorCalibrate:
         expected_distance = math.sqrt((0.5 - 0.5) ** 2 + (0.1 - 0.9) ** 2)
         expected_ratio = 1.8 / expected_distance
         assert abs(ratio - expected_ratio) < 0.001
+
+    def test_pixel_pose_calibration_uses_video_dimensions(self):
+        """The orchestrator boundary converts normalized pose height to pixels."""
+        calibrator = PixelCalibrator()
+        pose = _pose_sequence_in_pixels(
+            [_make_standard_pose()], 1920, 1080
+        )[0]
+
+        assert calibrator.calibrate(pose, 180.0) == pytest.approx(
+            1.8 / (0.8 * 1080)
+        )
 
     def test_calibration_with_different_heights(self):
         """Ratio scales linearly with user height."""
@@ -378,6 +391,20 @@ class TestPixelCalibratorVerifyWithBat:
             calibrator.verify_with_bat(bat_detection, 0.75, 3.0)
 
 
+class TestBatLengthScale:
+    """Test bat-length calibration provenance."""
+
+    def test_bat_length_scale_ignores_unpredicted_pixel_detector_length(self):
+        """Arbitrary detector pixel lengths are not calibration references."""
+        trajectory = BatTrajectory(
+            detections=[_make_detection(0, length_pixels=12.0)]
+        )
+
+        assert BiomechanicsOrchestrator._calibrate_from_bat_length(
+            trajectory, bat_length_meters=0.85, video_width=1920, video_height=1080
+        ) is None
+
+
 class TestImpactMetricFrameSelection:
     """Test robust metric-frame selection within the impact zone."""
 
@@ -441,6 +468,56 @@ class TestBatSpeedCalculator:
         assert abs(result.speed_kmh - 108.0) < BAT_SPEED_PRECISION_KMH
         assert result.precision == BAT_SPEED_PRECISION_KMH
         assert result.measurement_frame == 10
+
+    def test_normalized_displacement_uses_video_pixel_scale(self):
+        """Equal normalized x/y changes map to different pixel distances."""
+        calculator = BatSpeedCalculator()
+
+        def speed_for(position: tuple[float, float]) -> float:
+            trajectory = _bat_trajectory_in_pixels(
+                BatTrajectory(
+                    detections=[
+                        _make_detection(
+                            9,
+                            position=(0.0, 0.0),
+                            coordinate_space="normalized",
+                        ),
+                        _make_detection(
+                            10,
+                            position=position,
+                            coordinate_space="normalized",
+                        ),
+                    ]
+                ),
+                1920,
+                1080,
+            )
+            return calculator.calculate_bat_speed(
+                trajectory, impact_frame=10, pixel_to_meter=1.0, fps=1.0
+            ).speed_kmh
+
+        assert speed_for((0.1, 0.0)) == pytest.approx(192.0 * 3.6)
+        assert speed_for((0.0, 0.1)) == pytest.approx(108.0 * 3.6)
+
+    def test_pixel_displacement_is_not_scaled_by_video_dimensions(self):
+        """Pixel-coordinate bat trajectories are not scaled a second time."""
+        calculator = BatSpeedCalculator()
+        trajectory = _bat_trajectory_in_pixels(
+            BatTrajectory(
+                detections=[
+                    _make_detection(9, position=(0.0, 0.0)),
+                    _make_detection(10, position=(10.0, 0.0)),
+                ]
+            ),
+            1920,
+            1080,
+        )
+
+        result = calculator.calculate_bat_speed(
+            trajectory, impact_frame=10, pixel_to_meter=1.0, fps=1.0
+        )
+
+        assert result.speed_kmh == pytest.approx(10.0 * 3.6)
 
     def test_speed_prefers_bat_head_position_when_available(self):
         """Speed should use bat_head_position over center position when provided."""

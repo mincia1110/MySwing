@@ -14,14 +14,14 @@ import math
 
 import pytest
 
-from app.models.biomechanics import JointAngularVelocity, KinematicChainResult, RotationResult
+from app.models.biomechanics import JointAngularVelocity
 from app.models.pose import Keypoint, PoseResult
 from app.pipeline.biomechanics_analyzer import (
     HandPathAnalyzer,
     KinematicChainAnalyzer,
     RotationAnalyzer,
+    _pose_sequence_in_pixels,
 )
-
 
 # --- Helper functions ---
 
@@ -108,6 +108,25 @@ def _make_kinematic_pose(
 
 class TestKinematicChainAngularVelocity:
     """Test angular velocity calculation for known angle sequences."""
+
+    def test_three_point_angle_uses_video_aspect_ratio(self):
+        """Pixel-space conversion corrects normalized 3-point geometry."""
+        pose = _make_pose_result(
+            [
+                _make_keypoint("parent", x=0.6, y=0.4),
+                _make_keypoint("joint", x=0.5, y=0.5),
+                _make_keypoint("child", x=0.6, y=0.6),
+            ]
+        )
+        parent, joint, child = _pose_sequence_in_pixels(
+            [pose], 1920, 1080
+        )[0].keypoints
+
+        angle = KinematicChainAnalyzer._calculate_3point_angle(
+            parent, joint, child
+        )
+
+        assert angle == pytest.approx(58.72, abs=0.01)
 
     def test_basic_angular_velocity_calculation(self):
         """Angular velocity is computed as angle_change * fps for consecutive frames."""
@@ -466,8 +485,16 @@ class TestRotationSpeed:
         for i, angle_deg in enumerate(angles_deg):
             angle_rad = math.radians(angle_deg)
             keypoints = [
-                _make_keypoint("left_hip", x=0.5 - 0.1 * math.cos(angle_rad), y=0.5 - 0.1 * math.sin(angle_rad)),
-                _make_keypoint("right_hip", x=0.5 + 0.1 * math.cos(angle_rad), y=0.5 + 0.1 * math.sin(angle_rad)),
+                _make_keypoint(
+                    "left_hip",
+                    x=0.5 - 0.1 * math.cos(angle_rad),
+                    y=0.5 - 0.1 * math.sin(angle_rad),
+                ),
+                _make_keypoint(
+                    "right_hip",
+                    x=0.5 + 0.1 * math.cos(angle_rad),
+                    y=0.5 + 0.1 * math.sin(angle_rad),
+                ),
                 _make_keypoint("left_shoulder", x=0.4, y=0.3),
                 _make_keypoint("right_shoulder", x=0.6, y=0.3),
             ]
@@ -490,8 +517,18 @@ class TestRotationSpeed:
             angle_rad = math.radians(angle_deg)
             low_conf = 0.5 if i == 2 else 0.95
             keypoints = [
-                _make_keypoint("left_hip", x=0.5 - 0.1 * math.cos(angle_rad), y=0.5 - 0.1 * math.sin(angle_rad), confidence=low_conf),
-                _make_keypoint("right_hip", x=0.5 + 0.1 * math.cos(angle_rad), y=0.5 + 0.1 * math.sin(angle_rad), confidence=low_conf),
+                _make_keypoint(
+                    "left_hip",
+                    x=0.5 - 0.1 * math.cos(angle_rad),
+                    y=0.5 - 0.1 * math.sin(angle_rad),
+                    confidence=low_conf,
+                ),
+                _make_keypoint(
+                    "right_hip",
+                    x=0.5 + 0.1 * math.cos(angle_rad),
+                    y=0.5 + 0.1 * math.sin(angle_rad),
+                    confidence=low_conf,
+                ),
                 _make_keypoint("left_shoulder", x=0.4, y=0.3),
                 _make_keypoint("right_shoulder", x=0.6, y=0.3),
             ]

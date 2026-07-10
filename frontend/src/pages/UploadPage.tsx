@@ -16,7 +16,6 @@ export function UploadPage() {
   const [fileKey, setFileKey] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<VideoMetadataWithThumbnailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isStarting, setIsStarting] = useState(false);
 
   const handleUploadComplete = useCallback(
     (result: { fileKey: string; metadata: VideoMetadataWithThumbnailResponse }) => {
@@ -30,7 +29,6 @@ export function UploadPage() {
   const handleStartAnalysis = useCallback(async () => {
     if (!fileKey) return;
 
-    setIsStarting(true);
     setStep("starting");
     setError(null);
 
@@ -42,13 +40,8 @@ export function UploadPage() {
         err instanceof Error ? err.message : t("uploadPage.startError");
       setError(message);
       setStep("profile");
-      setIsStarting(false);
     }
   }, [fileKey, navigate, t]);
-
-  const handleSkipProfile = useCallback(() => {
-    void handleStartAnalysis();
-  }, [handleStartAnalysis]);
 
   const handleProfileSaved = useCallback(() => {
     void handleStartAnalysis();
@@ -82,16 +75,6 @@ export function UploadPage() {
           <h2>{t("uploadPage.profileTitle")}</h2>
           <p>{t("uploadPage.profileIntro")}</p>
           <UserProfileForm onSaved={handleProfileSaved} />
-          <div className="page__actions">
-            <button
-              type="button"
-              onClick={handleSkipProfile}
-              disabled={isStarting}
-              className="button button--secondary"
-            >
-              {t("uploadPage.skipAndStart")}
-            </button>
-          </div>
           {error && (
             <p className="page__error" role="alert">
               {error}

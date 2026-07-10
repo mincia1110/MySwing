@@ -9,6 +9,7 @@ Provides endpoints for:
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -175,8 +176,20 @@ async def create_analysis(
     # Make the analysis row visible to workers before enqueueing the task.
     await db.commit()
 
-    # Enqueue Celery task
-    analyze_swing_task.delay(str(analysis_id))
+    # Enqueue Celery task. If publishing fails after the row commit, terminate
+    # the row explicitly so clients never poll an orphaned pending job forever.
+    try:
+        analyze_swing_task.delay(str(analysis_id))
+    except Exception:
+        logger.exception("Failed to enqueue analysis job: analysis_id=%s", analysis_id)
+        analysis.status = "failed"
+        analysis.error_message = "Analysis queue is temporarily unavailable."
+        analysis.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis queue is temporarily unavailable. Please retry.",
+        )
 
     logger.info(
         "Analysis job created: analysis_id=%s, user_id=%s, video_id=%s",

@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import statistics
 import time
+from dataclasses import replace
 from typing import List, Tuple
 
 from app.models.bat import BatDetectionResult, BatTrajectory
@@ -56,6 +57,74 @@ ANGLE_PRECISION_DEGREES = 0.5
 
 # Hitting zone duration before impact (150ms)
 HITTING_ZONE_DURATION_MS = 150.0
+
+
+def _pose_sequence_in_pixels(
+    pose_sequence: List[PoseResult],
+    video_width: int,
+    video_height: int,
+) -> List[PoseResult]:
+    """Return pixel-coordinate pose copies for biomechanics calculations."""
+    width = max(float(video_width), 1.0)
+    height = max(float(video_height), 1.0)
+    return [
+        replace(
+            pose,
+            keypoints=[
+                replace(keypoint, x=keypoint.x * width, y=keypoint.y * height)
+                for keypoint in pose.keypoints
+            ],
+        )
+        for pose in pose_sequence
+    ]
+
+
+def _bat_detection_in_pixels(
+    detection: BatDetectionResult,
+    video_width: int,
+    video_height: int,
+) -> BatDetectionResult:
+    """Convert one normalized bat detection to pixels."""
+    if detection.coordinate_space != "normalized":
+        return detection
+    width = max(float(video_width), 1.0)
+    height = max(float(video_height), 1.0)
+    position = (detection.position[0] * width, detection.position[1] * height)
+    head = (
+        (
+            detection.bat_head_position[0] * width,
+            detection.bat_head_position[1] * height,
+        )
+        if detection.bat_head_position is not None
+        else None
+    )
+    length = (
+        2.0 * math.dist(position, head)
+        if head is not None
+        else detection.length_pixels * height
+    )
+    return replace(
+        detection,
+        position=position,
+        length_pixels=length,
+        coordinate_space="pixel",
+        bat_head_position=head,
+    )
+
+
+def _bat_trajectory_in_pixels(
+    bat_trajectory: BatTrajectory,
+    video_width: int,
+    video_height: int,
+) -> BatTrajectory:
+    """Convert normalized bat detections to pixels, leaving pixel data unchanged."""
+    return replace(
+        bat_trajectory,
+        detections=[
+            _bat_detection_in_pixels(detection, video_width, video_height)
+            for detection in bat_trajectory.detections
+        ],
+    )
 
 
 class CalibrationError(Exception):
@@ -175,16 +244,14 @@ class PixelCalibrator:
         left/right ankle keypoints as the ankle reference. If only one ankle
         is available, uses that single ankle.
 
-        Note: Keypoint coordinates are normalized (0-1), so the returned
-        distance is in normalized pixel space. The caller should account for
-        this when the image resolution is known, or use the ratio directly
-        since both height and distance are in the same coordinate space.
+        BiomechanicsOrchestrator converts normalized pose landmarks to pixel
+        coordinates before calibration.
 
         Args:
             pose_result: Pose estimation result with keypoints.
 
         Returns:
-            Euclidean distance in normalized pixel coordinates.
+            Euclidean distance in pixel coordinates.
 
         Raises:
             CalibrationError: If head or both ankle keypoints are missing
@@ -1367,6 +1434,8 @@ class BiomechanicsOrchestrator:
     def _calibrate_from_bat_length(
         bat_trajectory: BatTrajectory,
         bat_length_meters: float,
+        video_width: int = 1,
+        video_height: int = 1,
     ) -> float | None:
         """Estimate coordinate-to-meter scale from known bat length.
 
@@ -1378,7 +1447,9 @@ class BiomechanicsOrchestrator:
             return None
 
         lengths = [
-            float(d.length_pixels)
+            _bat_detection_in_pixels(
+                d, video_width, video_height
+            ).length_pixels
             for d in bat_trajectory.detections
             if d.detected
             and d.length_pixels > 0
@@ -1496,6 +1567,13 @@ class BiomechanicsOrchestrator:
             processing time, and timeout flag if applicable.
         """
         start_time = time.time()
+        source_bat_trajectory = bat_trajectory
+        pose_sequence = _pose_sequence_in_pixels(
+            pose_sequence, video_width, video_height
+        )
+        bat_trajectory = _bat_trajectory_in_pixels(
+            bat_trajectory, video_width, video_height
+        )
         unmeasurable_metrics: list[UnmeasurableMetric] = []
         result = BiomechanicsResult()
 
@@ -1557,8 +1635,10 @@ class BiomechanicsOrchestrator:
 
         if pixel_to_meter is not None:
             bat_length_scale = self._calibrate_from_bat_length(
-                bat_trajectory,
+                source_bat_trajectory,
                 bat_length_meters,
+                video_width,
+                video_height,
             )
             if bat_length_scale is not None:
                 pixel_to_meter = max(pixel_to_meter, bat_length_scale)
@@ -1570,8 +1650,6 @@ class BiomechanicsOrchestrator:
                 impact_frame,
                 pixel_to_meter,
                 fps,
-                video_width=video_width,
-                video_height=video_height,
             )
 
         # Step 2: Bat Speed
@@ -1602,8 +1680,7 @@ class BiomechanicsOrchestrator:
         try:
             result.attack_angle = self._normalize_reported_attack_angle(
                 self._impact_attack_angle_calculator.calculate_launch_angle(
-                    bat_trajectory, metric_impact_frame,
-                    video_width=video_width, video_height=video_height,
+                    bat_trajectory, metric_impact_frame
                 )
             )
             if result.attack_angle and not (0.0 <= result.attack_angle.angle_degrees <= 60.0):
@@ -1612,8 +1689,7 @@ class BiomechanicsOrchestrator:
                     try:
                         candidate = self._normalize_reported_attack_angle(
                             self._impact_attack_angle_calculator.calculate_launch_angle(
-                                bat_trajectory, metric_impact_frame + offset,
-                                video_width=video_width, video_height=video_height,
+                                bat_trajectory, metric_impact_frame + offset
                             )
                         )
                         if 0.0 <= candidate.angle_degrees <= 60.0:

@@ -225,6 +225,46 @@ class TestCreateAnalysis:
         finally:
             app.dependency_overrides.clear()
 
+    @patch("app.api.analyses.analyze_swing_task")
+    @patch("app.api.analyses.get_async_db")
+    def test_create_analysis_marks_row_failed_when_enqueue_fails(
+        self, mock_get_db, mock_task, client, mock_profile, mock_video
+    ):
+        """A broker outage must not leave a permanently pending analysis row."""
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_profile),
+                _mock_scalar_result(mock_video),
+            ]
+        )
+        mock_session.add = MagicMock()
+        mock_session.flush = AsyncMock()
+        mock_session.commit = AsyncMock()
+        mock_task.delay.side_effect = ConnectionError("broker unavailable")
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+
+        app.dependency_overrides[get_async_db] = override_get_db
+        try:
+            response = client.post(
+                "/api/v1/analyses",
+                json={"file_key": mock_video.file_key},
+                headers={"X-User-Id": str(mock_profile.user_id)},
+            )
+
+            assert response.status_code == 503
+            analysis = mock_session.add.call_args.args[0]
+            assert analysis.status == "failed"
+            assert analysis.error_message == "Analysis queue is temporarily unavailable."
+            assert analysis.completed_at is not None
+            assert mock_session.commit.await_count == 2
+        finally:
+            app.dependency_overrides.clear()
+
     @patch("app.api.analyses.get_async_db")
     def test_create_analysis_no_profile(self, mock_get_db, client):
         """Creating analysis without user profile returns 400."""

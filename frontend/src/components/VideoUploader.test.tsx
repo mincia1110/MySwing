@@ -77,6 +77,63 @@ describe("VideoUploader", () => {
     expect(apiClient.getPresignedUrl).not.toHaveBeenCalled();
   });
 
+  it("rejects a video extension paired with a non-video MIME type", async () => {
+    const onError = vi.fn();
+    render(<VideoUploader onUploadError={onError} />);
+
+    const input = screen.getByTestId("video-uploader-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [makeFile("disguised.mp4", "application/pdf", 100)] },
+    });
+
+    await waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(apiClient.getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a generic MIME type from the video extension", async () => {
+    const onComplete = vi.fn();
+    render(<VideoUploader onUploadComplete={onComplete} />);
+
+    const input = screen.getByTestId("video-uploader-input") as HTMLInputElement;
+    const file = makeFile("swing.mp4", "application/octet-stream");
+    Object.defineProperty(file, "duration", { value: 5 });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+    expect(apiClient.getPresignedUrl).toHaveBeenCalledWith({
+      file_name: "swing.mp4",
+      content_type: "video/mp4",
+    });
+  });
+
+  it("ignores another file while an upload is already in progress", async () => {
+    let resolvePresigned: (value: PresignedUrlResponse) => void = () => undefined;
+    vi.spyOn(apiClient, "getPresignedUrl").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePresigned = resolve;
+        }),
+    );
+    const onComplete = vi.fn();
+    render(<VideoUploader onUploadComplete={onComplete} />);
+
+    const first = makeFile("first.mp4");
+    const second = makeFile("second.mp4");
+    Object.defineProperty(first, "duration", { value: 5 });
+    Object.defineProperty(second, "duration", { value: 5 });
+    const input = screen.getByTestId("video-uploader-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [first] } });
+    await waitFor(() => expect(apiClient.getPresignedUrl).toHaveBeenCalledOnce());
+
+    fireEvent.drop(screen.getByTestId("video-uploader-dropzone"), {
+      dataTransfer: { files: [second] },
+    });
+    expect(apiClient.getPresignedUrl).toHaveBeenCalledOnce();
+
+    resolvePresigned(samplePresigned);
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+  });
+
   it("rejects files larger than the maximum size", async () => {
     const onError = vi.fn();
     render(

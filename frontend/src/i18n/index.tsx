@@ -27,9 +27,8 @@ const ko = {
       "한 번의 스윙만 담긴 짧은 야구 영상을 업로드하세요. 권장 길이는 3~7초이며, 약 5초 영상이 가장 적합합니다.",
     profileTitle: "사용자 프로필",
     profileIntro:
-      "정확한 분석을 위해 프로필 정보를 입력하세요. 건너뛰기를 누르면 기본값으로 분석합니다.",
+      "분석을 시작하려면 프로필 정보를 입력하세요.",
     uploadedVideo: "업로드한 영상",
-    skipAndStart: "건너뛰고 분석 시작",
     starting: "분석을 시작하는 중...",
     startError: "분석 시작에 실패했습니다.",
   },
@@ -248,9 +247,8 @@ const en = {
       "Upload a short baseball video containing exactly one swing. Recommended length is 3–7 seconds; around 5 seconds is ideal.",
     profileTitle: "User Profile",
     profileIntro:
-      "Enter profile details for a more accurate analysis. If you skip this step, default values will be used.",
+      "Enter your profile details to start the analysis.",
     uploadedVideo: "Uploaded Video",
-    skipAndStart: "Skip and Start Analysis",
     starting: "Starting analysis...",
     startError: "Failed to start analysis.",
   },

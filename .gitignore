@@ -58,6 +58,6 @@ PROGRESS_SESSION.md
 node_modules/
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 dist-ssr/
 *.local
-

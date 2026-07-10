@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.utils.time import get_exponential_backoff_interval
 
 from app.core.celery_app import DEFAULT_RETRY_POLICY, celery_app
 from app.db.session import sync_session_factory
@@ -85,6 +86,7 @@ def _update_analysis_status(
         logger.error(
             "Failed to update analysis %s status: %s", analysis_id, str(e)
         )
+        raise
     finally:
         session.close()
 
@@ -399,6 +401,31 @@ def _deserialize_bat_trajectory(data: dict) -> Any:
     )
 
 
+def _mirror_bat_trajectory_horizontal(
+    bat_trajectory: Any, frame_width: int
+) -> Any:
+    """Mirror bat coordinates and orientation back to the original video view."""
+    for detection in bat_trajectory.detections:
+        if not detection.detected:
+            continue
+        mirror_width = (
+            1.0
+            if detection.coordinate_space == "normalized"
+            else float(frame_width - 1)
+        )
+        detection.position = (
+            mirror_width - detection.position[0],
+            detection.position[1],
+        )
+        if detection.bat_head_position is not None:
+            detection.bat_head_position = (
+                mirror_width - detection.bat_head_position[0],
+                detection.bat_head_position[1],
+            )
+        detection.orientation_angle = (180.0 - detection.orientation_angle) % 360.0
+    return bat_trajectory
+
+
 # ============================================================================
 # Frame I/O helpers
 # ============================================================================
@@ -410,10 +437,14 @@ def _save_frames_to_temp_dir(frames: list[np.ndarray]) -> str:
     Returns the temp directory path.
     """
     temp_dir = tempfile.mkdtemp(prefix="myswing_frames_")
-    for i, frame in enumerate(frames):
-        frame_path = os.path.join(temp_dir, f"frame_{i:06d}.npy")
-        np.save(frame_path, frame)
-    return temp_dir
+    try:
+        for i, frame in enumerate(frames):
+            frame_path = os.path.join(temp_dir, f"frame_{i:06d}.npy")
+            np.save(frame_path, frame)
+        return temp_dir
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
 def _load_frames_from_temp_dir(temp_dir: str) -> list[np.ndarray]:
@@ -489,10 +520,12 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
         video_width = analysis_data.get("video_width", 1920)
         video_height = analysis_data.get("video_height", 1080)
 
-        # Determine if frames should be flipped for left-handed batters
-        flip_horizontal = False
-        if user_profile:
-            flip_horizontal = user_profile.get("batting_direction", "right") == "left"
+        # Mirroring canonicalizes image coordinates, but pose landmark names remain
+        # anatomical. Keep the real handedness for every landmark consumer.
+        batting_direction = (
+            user_profile.get("batting_direction", "right") if user_profile else "right"
+        )
+        flip_horizontal = batting_direction == "left"
 
         # Explicitly track coordinate system contract used by downstream analyzers.
         # If flipped, analysis runs in canonical RHB space; otherwise original space.
@@ -517,7 +550,7 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
             analysis_id,
             pose_result,
             preprocessing_result,
-            dominant_hand="right",  # canonical RHB analysis space after optional LHB frame flip
+            dominant_hand=batting_direction,
         )
         bat_result = _run_pose_constrained_bat_tracking(
             analysis_id,
@@ -532,7 +565,7 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
             pose_result,
             bat_result,
             fps,
-            batting_direction="right",  # canonical RHB analysis space after optional LHB frame flip
+            batting_direction=batting_direction,
         )
 
         # ---- Step 4: Biomechanics Analysis ----
@@ -547,7 +580,7 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
         evaluation_result = _run_swing_evaluation(
             analysis_id, biomechanics_result, bat_result, pose_result,
             swing_phases_result, user_profile, fps,
-            batting_direction=preprocessing_result.get("canonical_batting_direction", "right"),
+            batting_direction=batting_direction,
         )
 
         # ---- Step 6: Report Generation ----
@@ -618,16 +651,22 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
             str(exc),
             exc_info=True,
         )
+        # Retry with exponential backoff if retries remain
+        if self.request.retries < self.max_retries:
+            countdown = get_exponential_backoff_interval(
+                factor=1,
+                retries=self.request.retries,
+                maximum=DEFAULT_RETRY_POLICY["retry_backoff_max"],
+                full_jitter=DEFAULT_RETRY_POLICY["retry_jitter"],
+            )
+            raise self.retry(exc=exc, countdown=countdown)
+
         _update_analysis_status(
             analysis_id,
             STATUS_FAILED,
             error_message=str(exc),
             completed_at=datetime.now(timezone.utc),
         )
-
-        # Retry with exponential backoff if retries remain
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc)
 
         return {
             "analysis_id": analysis_id,
@@ -671,6 +710,8 @@ def _run_preprocessing(
     if not video_file_key:
         raise ValueError("No video file key provided for preprocessing")
 
+    temp_video_path: str | None = None
+    frames_dir: str | None = None
     try:
         import cv2
 
@@ -706,6 +747,9 @@ def _run_preprocessing(
                 frames.append(frame)
         finally:
             cap.release()
+
+        if not frames:
+            raise ValueError("Video contains no decodable frames")
 
         original_frame_count = len(frames)
         normalization = normalize_frames_for_analysis(
@@ -761,35 +805,13 @@ def _run_preprocessing(
             "status": "completed",
         }
 
-    except Exception as e:
-        logger.warning(
-            "Preprocessing with ML modules failed for analysis_id=%s: %s, "
-            "falling back to stub result",
-            analysis_id,
-            str(e),
-        )
-        # Graceful fallback: return minimal result so pipeline can continue
-        return {
-            "analysis_id": analysis_id,
-            "video_file_key": video_file_key,
-            "frames_extracted": True,
-            "frames_dir": None,
-            "video_path": None,
-            "fps": 30.0,
-            "frame_count": 0,
-            "video_width": 1920,
-            "video_height": 1080,
-            "original_fps": 30.0,
-            "original_video_width": 1920,
-            "original_video_height": 1080,
-            "original_frame_count": 0,
-            "normalization_applied": False,
-            "normalization_target_fps": 30.0,
-            "normalization_crop_box": None,
-            "normalization_sampled_frame_count": 0,
-            "quality_result": None,
-            "status": "completed",
-        }
+    except Exception:
+        if frames_dir and os.path.isdir(frames_dir):
+            shutil.rmtree(frames_dir)
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        logger.exception("Preprocessing failed for analysis_id=%s", analysis_id)
+        raise
 
 
 def _run_pose_estimation(
@@ -1517,9 +1539,11 @@ def _run_biomechanics_analysis(
         # Extract user calibration data
         user_height_cm = 175.0  # default
         bat_length_meters = 0.86  # default ~34 inches
+        batting_direction = "right"
         if user_profile:
             user_height_cm = user_profile.get("height", 175.0) or 175.0
             bat_length_meters = _bat_length_to_meters(user_profile.get("bat_length"))
+            batting_direction = user_profile.get("batting_direction", "right")
 
         # Determine impact frame from swing phases
         phases = swing_phases_result.get("phases", {})
@@ -1584,23 +1608,28 @@ def _run_biomechanics_analysis(
             swing_phases_dict["load_frame"] = int(load_phase[0])
 
         # Fallback: estimate stride/load from frame proportions when classifier fails
-        if pose_sequence_data:
-            total = len(pose_sequence_data)
+        if pose_sequence:
+            total = len(pose_sequence)
+
+            def frame_at_fraction(fraction: float) -> int:
+                index = min(int(total * fraction), total - 1)
+                return pose_sequence[index].frame_index
+
             if "stride_start_frame" not in swing_phases_dict and total > 6:
-                swing_phases_dict["stride_start_frame"] = int(total * 0.15)
-                swing_phases_dict["stride_end_frame"] = int(total * 0.35)
+                swing_phases_dict["stride_start_frame"] = frame_at_fraction(0.15)
+                swing_phases_dict["stride_end_frame"] = frame_at_fraction(0.35)
             if "load_frame" not in swing_phases_dict and total > 3:
-                swing_phases_dict["load_frame"] = int(total * 0.10)
+                swing_phases_dict["load_frame"] = frame_at_fraction(0.10)
 
         # If no rotation phase found, use middle portion of swing as fallback
-        if not swing_phases_dict.get("rotation_start_frame") and pose_sequence_data:
-            total_frames = len(pose_sequence_data)
+        if "rotation_start_frame" not in swing_phases_dict and pose_sequence:
+            total_frames = len(pose_sequence)
             if total_frames > 4:
                 # Use middle 60% of frames as rotation window
                 start_pct = 0.2
                 end_pct = 0.8
-                swing_phases_dict["rotation_start_frame"] = int(total_frames * start_pct)
-                swing_phases_dict["rotation_end_frame"] = int(total_frames * end_pct)
+                swing_phases_dict["rotation_start_frame"] = frame_at_fraction(start_pct)
+                swing_phases_dict["rotation_end_frame"] = frame_at_fraction(end_pct)
                 logger.info(
                     "No rotation phase found, using frames %d-%d "
                     "as rotation window for analysis_id=%s",
@@ -1610,33 +1639,26 @@ def _run_biomechanics_analysis(
                 )
 
         # Ensure start_frame and end_frame are set for kinematic chain analysis
-        if "start_frame" not in swing_phases_dict and pose_sequence_data:
-            swing_phases_dict["start_frame"] = 0
-            swing_phases_dict["end_frame"] = len(pose_sequence_data) - 1
+        if "start_frame" not in swing_phases_dict and pose_sequence:
+            swing_phases_dict["start_frame"] = pose_sequence[0].frame_index
+            swing_phases_dict["end_frame"] = pose_sequence[-1].frame_index
 
         # Create orchestrator and run analysis
         orchestrator = BiomechanicsOrchestrator()
 
-        # Extract video dimensions for aspect ratio correction. The production
-        # wrist-based estimator emits normalized coordinates (0-1), so the
-        # biomechanics layer needs frame dimensions to convert direction and
-        # distance consistently.
-        video_width = 1
-        video_height = 1
-        if bat_result.get("method") in {
-            "wrist_estimation",
-            "pose_constrained_bat_tracking",
-        }:
-            if preprocessing_result:
-                video_width = preprocessing_result.get("video_width", 1920)
-                video_height = preprocessing_result.get("video_height", 1080)
-            else:
-                video_width = 1920
-                video_height = 1080
-
-        # Analysis currently runs in canonical RHB space after optional flip.
-        # Keep explicit for call-site clarity.
-        canonical_batting_direction = "right"
+        # Pose coordinates are normalized regardless of the bat detector. Bat
+        # detections declare their own coordinate space and are scaled only when
+        # normalized, so pixel trajectories can safely use the same dimensions.
+        video_width = (
+            preprocessing_result.get("video_width", 1920)
+            if preprocessing_result
+            else 1
+        )
+        video_height = (
+            preprocessing_result.get("video_height", 1080)
+            if preprocessing_result
+            else 1
+        )
 
         biomechanics_result = orchestrator.analyze(
             pose_sequence=pose_sequence,
@@ -1648,7 +1670,7 @@ def _run_biomechanics_analysis(
             fps=fps,
             video_width=video_width,
             video_height=video_height,
-            batting_direction=canonical_batting_direction,
+            batting_direction=batting_direction,
         )
 
         # Serialize result
@@ -1924,16 +1946,13 @@ def _run_report_generation(
                 if flip_horizontal:
                     import cv2
                     frames = [cv2.flip(f, 1) for f in frames]
-                    frame_w = frames[0].shape[1] if frames else 1
                     # Mirror pose keypoints: x' = 1 - x (normalized coords)
                     for pose in pose_sequence:
                         for kp in pose.keypoints:
                             kp.x = 1.0 - kp.x
-                    # Mirror bat positions: x' = width - x (pixel coords)
-                    for det in bat_trajectory.detections:
-                        if det.detected:
-                            x, y = det.position
-                            det.position = (frame_w - x, y)
+                    _mirror_bat_trajectory_horizontal(
+                        bat_trajectory, frames[0].shape[1]
+                    )
 
                 fps = preprocessing_result.get("fps", 30.0)
 

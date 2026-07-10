@@ -131,7 +131,7 @@ class TestEvaluateBarrelInZone:
         """Barrel staying in zone for ≥150ms at 60fps should pass."""
         fps = 60.0
         impact_frame = 30
-        # Need at least 9 frames at 60fps for 150ms (9/60 = 150ms)
+        # Need at least 10 frames at 60fps for 150ms (9 elapsed intervals).
         # Create detections with consistent y-position around impact
         detections = []
         for i in range(20, 40):
@@ -156,7 +156,7 @@ class TestEvaluateBarrelInZone:
         """Barrel staying in zone for <150ms at 60fps should fail."""
         fps = 60.0
         impact_frame = 10
-        # Only 4 frames at 60fps = ~67ms (< 150ms)
+        # Only 4 frames at 60fps = 50ms across 3 elapsed intervals.
         detections = []
         for i in range(8, 12):
             detections.append(
@@ -180,6 +180,29 @@ class TestEvaluateBarrelInZone:
         )
         assert result["passed"] is False
         assert result["duration_ms"] < 150.0
+
+    @pytest.mark.parametrize(
+        ("sample_count", "expected_duration_ms", "expected_passed"),
+        [
+            (9, 1000.0 * 8 / 60, False),
+            (10, 150.0, True),
+        ],
+    )
+    def test_barrel_in_zone_uses_elapsed_frame_intervals(
+        self, sample_count, expected_duration_ms, expected_passed
+    ):
+        """Nine samples span eight intervals; ten span the 150ms boundary."""
+        detections = [
+            _make_bat_detection(frame_index=i, x=100.0 + i * 2, y=200.0)
+            for i in range(sample_count)
+        ]
+
+        result = self.evaluator._evaluate_barrel_in_zone(
+            BatTrajectory(detections=detections), impact_frame=4, fps=60.0
+        )
+
+        assert result["duration_ms"] == pytest.approx(expected_duration_ms)
+        assert result["passed"] is expected_passed
 
 
 class TestEvaluateKinematicSequence:

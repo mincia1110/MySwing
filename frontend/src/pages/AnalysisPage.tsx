@@ -6,7 +6,7 @@
  *  2. Renders <AnalysisStatusPolling /> until the job reaches a terminal state.
  *  3. On completion, fetches the full report and current user's trend data.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getAnalysisReport, getUserTrends } from "../api/analysis";
 import { AnalysisReport } from "../components/AnalysisReport";
@@ -28,36 +28,53 @@ export function AnalysisPage() {
   const [report, setReport] = useState<AnalysisReportResponse | null>(null);
   const [trendData, setTrendData] = useState<TrendDataResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const requestSequenceRef = useRef(0);
+  const completedAnalysisRef = useRef<string | null>(null);
+  const requestContextRef = useRef({ analysisId, language });
+  requestContextRef.current = { analysisId, language };
+
+  const loadReport = useCallback(async () => {
+    if (!analysisId) return;
+    const requestSequence = ++requestSequenceRef.current;
+    const requestContext = { analysisId, language };
+    const isCurrentRequest = () =>
+      requestSequence === requestSequenceRef.current &&
+      requestContext.analysisId === requestContextRef.current.analysisId &&
+      requestContext.language === requestContextRef.current.language;
+
+    setPhase("loading");
+    setError(null);
+    try {
+      const [reportResult, trendResult] = await Promise.allSettled([
+        getAnalysisReport(analysisId, language),
+        getUserTrends(),
+      ]);
+
+      if (!isCurrentRequest()) return;
+      if (reportResult.status === "rejected") throw reportResult.reason;
+
+      setReport(reportResult.value);
+      setTrendData(trendResult.status === "fulfilled" ? trendResult.value : null);
+      setPhase("ready");
+    } catch (err) {
+      if (!isCurrentRequest()) return;
+      setError(err instanceof Error ? err.message : t("analysisPage.reportError"));
+      setPhase("failed");
+    }
+  }, [analysisId, language, t]);
 
   const handleCompleted = useCallback(
-    async (_status: AnalysisStatusResponse) => {
-      if (!analysisId) return;
-      setPhase("loading");
-      try {
-        const [reportResult, trendResult] = await Promise.allSettled([
-          getAnalysisReport(analysisId, language),
-          getUserTrends(),
-        ]);
-
-        if (reportResult.status === "rejected") {
-          throw reportResult.reason;
-        }
-
-        setReport(reportResult.value);
-        setTrendData(trendResult.status === "fulfilled" ? trendResult.value : null);
-        setPhase("ready");
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : t("analysisPage.reportError"),
-        );
-        setPhase("failed");
-      }
+    (status: AnalysisStatusResponse) => {
+      if (!analysisId || status.analysis_id !== analysisId) return;
+      completedAnalysisRef.current = analysisId;
+      void loadReport();
     },
-    [analysisId, language, t],
+    [analysisId, loadReport],
   );
 
   const handleFailed = useCallback(
     (status: AnalysisStatusResponse | null, e?: Error) => {
+      if (status && status.analysis_id !== analysisId) return;
       setError(
         e?.message ??
           status?.error_message ??
@@ -65,15 +82,22 @@ export function AnalysisPage() {
       );
       setPhase("failed");
     },
-    [t],
+    [analysisId, t],
   );
 
   useEffect(() => {
+    requestSequenceRef.current += 1;
+    completedAnalysisRef.current = null;
     setPhase("polling");
     setReport(null);
     setTrendData(null);
     setError(null);
   }, [analysisId]);
+
+  useEffect(() => {
+    if (completedAnalysisRef.current === analysisId) void loadReport();
+    // loadReport changes with language; analysisId resets completion separately.
+  }, [language]);
 
   if (!analysisId) {
     return (
@@ -97,7 +121,7 @@ export function AnalysisPage() {
           {t("analysisPage.newAnalysis")}
         </Link>
       </div>
-      {phase !== "ready" ? (
+      {phase === "polling" ? (
         <AnalysisStatusPolling
           analysisId={analysisId}
           onCompleted={handleCompleted}

@@ -10,9 +10,11 @@ Verifies:
 Requirements: 6.9, 6.10, 8.1
 """
 
+import os
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
+import numpy as np
 import pytest
 
 from app.tasks.pipeline import (
@@ -29,6 +31,7 @@ from app.tasks.pipeline import (
     _run_report_generation,
     _run_swing_classification,
     _run_swing_evaluation,
+    _save_frames_to_temp_dir,
     _update_analysis_status,
     analyze_swing_task,
 )
@@ -60,6 +63,23 @@ def mock_analysis_data():
     }
 
 
+@pytest.fixture
+def stub_preprocessing():
+    """Keep orchestration tests independent from S3 and video decoding."""
+    with patch(
+        "app.tasks.pipeline._run_preprocessing",
+        return_value={
+            "frames_dir": None,
+            "fps": 30.0,
+            "video_width": 1920,
+            "video_height": 1080,
+            "quality_result": None,
+        },
+    ) as mocked:
+        yield mocked
+
+
+@pytest.mark.usefixtures("stub_preprocessing")
 class TestStatusTransitions:
     """Test that the pipeline correctly transitions through all status states."""
 
@@ -156,6 +176,57 @@ class TestStatusTransitions:
             len(last_call[0]) > 4 and last_call[0][4] is not None
         )
 
+    def test_left_handed_profile_is_preserved_for_anatomical_landmark_consumers(
+        self, mock_analysis_data
+    ):
+        """Mirroring pixels must not relabel MediaPipe's anatomical landmarks."""
+        analysis_data = {
+            **mock_analysis_data,
+            "user_profile": {
+                **mock_analysis_data["user_profile"],
+                "batting_direction": "left",
+            },
+        }
+        preprocessing_result = {
+            "frames_dir": None,
+            "fps": 30.0,
+            "video_width": 1920,
+            "video_height": 1080,
+            "quality_result": None,
+        }
+        evaluation_result = {
+            "evaluations": {},
+            "improvements": {},
+            "drill_recommendations": {},
+        }
+
+        with (
+            patch("app.tasks.pipeline._get_analysis_data", return_value=analysis_data),
+            patch("app.tasks.pipeline._update_analysis_status"),
+            patch(
+                "app.tasks.pipeline._run_preprocessing",
+                return_value=preprocessing_result,
+            ) as preprocess,
+            patch("app.tasks.pipeline._run_pose_estimation", return_value={}),
+            patch("app.tasks.pipeline._run_wrist_bat_estimation", return_value={}) as wrist,
+            patch("app.tasks.pipeline._run_pose_constrained_bat_tracking", return_value={}),
+            patch("app.tasks.pipeline._run_swing_classification", return_value={}) as classify,
+            patch("app.tasks.pipeline._run_biomechanics_analysis", return_value={}),
+            patch(
+                "app.tasks.pipeline._run_swing_evaluation",
+                return_value=evaluation_result,
+            ) as evaluate,
+            patch("app.tasks.pipeline._run_report_generation", return_value={}),
+            patch("app.tasks.pipeline._save_analysis_result"),
+        ):
+            result = analyze_swing_task.apply(args=[analysis_data["analysis_id"]]).get()
+
+        assert result["status"] == STATUS_COMPLETED
+        assert preprocess.call_args.kwargs["flip_horizontal"] is True
+        assert wrist.call_args.kwargs["dominant_hand"] == "left"
+        assert classify.call_args.kwargs["batting_direction"] == "left"
+        assert evaluate.call_args.kwargs["batting_direction"] == "left"
+
 
 class TestErrorHandling:
     """Test error handling: failed status set with error_message."""
@@ -242,6 +313,7 @@ class TestErrorHandling:
         assert "video file key" in error_message or "no video" in error_message
 
 
+@pytest.mark.usefixtures("stub_preprocessing")
 class TestGracefulDegradation:
     """Test graceful degradation: partial failure produces partial results."""
 
@@ -335,6 +407,46 @@ class TestGracefulDegradation:
 class TestRetryLogic:
     """Test retry logic: max 2 retries with exponential backoff."""
 
+    @patch("app.tasks.pipeline._get_analysis_data")
+    @patch("app.tasks.pipeline._update_analysis_status")
+    def test_failed_status_is_published_only_after_retries_are_exhausted(
+        self, mock_update_status, mock_get_data, analysis_id
+    ):
+        """Transient attempts must not look terminal to status pollers."""
+        mock_get_data.return_value = None
+
+        result = analyze_swing_task.apply(args=[analysis_id]).get()
+
+        status_calls = [call.args[1] for call in mock_update_status.call_args_list]
+        assert result["status"] == STATUS_FAILED
+        assert status_calls.count(STATUS_PREPROCESSING) == 3
+        assert status_calls.count(STATUS_FAILED) == 1
+        assert status_calls[-1] == STATUS_FAILED
+
+    @patch("app.tasks.pipeline.get_exponential_backoff_interval", side_effect=[1, 2])
+    @patch("app.tasks.pipeline._get_analysis_data", return_value=None)
+    @patch("app.tasks.pipeline._update_analysis_status")
+    def test_manual_retries_use_configured_backoff(
+        self, _mock_update_status, _mock_get_data, mock_backoff, analysis_id
+    ):
+        """Manual Task.retry calls must not fall back to Celery's 180-second delay."""
+        analyze_swing_task.apply(args=[analysis_id]).get()
+
+        assert mock_backoff.call_args_list == [
+            call(
+                factor=1,
+                retries=0,
+                maximum=60,
+                full_jitter=True,
+            ),
+            call(
+                factor=1,
+                retries=1,
+                maximum=60,
+                full_jitter=True,
+            ),
+        ]
+
     def test_task_has_max_retries_2(self):
         """analyze_swing_task should have max_retries=2."""
         assert analyze_swing_task.max_retries == 2
@@ -400,15 +512,37 @@ class TestPreprocessingStep:
         with pytest.raises(ValueError, match="No video file key"):
             _run_preprocessing(analysis_id, None)
 
-    def test_preprocessing_returns_expected_structure(self, analysis_id):
-        """Preprocessing should return dict with expected keys."""
-        result = _run_preprocessing(analysis_id, "videos/test.mp4")
+    @patch("app.services.s3_client.S3Client")
+    def test_preprocessing_download_failure_is_not_reported_completed(
+        self, mock_s3_client, analysis_id
+    ):
+        """A missing source video must fail instead of producing an empty report."""
+        download_file = mock_s3_client.return_value._client.download_file
+        download_file.side_effect = ConnectionError("S3 unavailable")
 
-        assert result["analysis_id"] == analysis_id
-        assert result["video_file_key"] == "videos/test.mp4"
-        assert result["frames_extracted"] is True
-        assert result["status"] == "completed"
+        with pytest.raises(ConnectionError, match="S3 unavailable"):
+            _run_preprocessing(analysis_id, "videos/test.mp4")
 
+        temp_video_path = download_file.call_args.args[2]
+        assert not os.path.exists(temp_video_path)
+
+    @patch("app.services.video_validator.extract_metadata")
+    @patch("app.services.s3_client.S3Client")
+    @patch("cv2.VideoCapture")
+    def test_preprocessing_rejects_video_without_decodable_frames(
+        self, mock_capture, mock_s3_client, mock_extract_metadata, analysis_id
+    ):
+        """A zero-frame decode must fail rather than produce an empty analysis."""
+        mock_extract_metadata.return_value.frame_rate = 30.0
+        mock_capture.return_value.read.return_value = (False, None)
+
+        with pytest.raises(ValueError, match="no decodable frames"):
+            _run_preprocessing(analysis_id, "videos/corrupt.mp4")
+
+        download_file = mock_s3_client.return_value._client.download_file
+        temp_video_path = download_file.call_args.args[2]
+        assert not os.path.exists(temp_video_path)
+        mock_capture.return_value.release.assert_called_once()
 
     @patch("app.tasks.pipeline._run_preprocessing")
     @patch("app.tasks.pipeline._save_analysis_result")
@@ -451,6 +585,23 @@ class TestPreprocessingStep:
         call_kwargs = mock_save_result.call_args[1]
         assert call_kwargs["video_id"] == mock_analysis_data["video_id"]
         assert call_kwargs["quality_result"] == quality_result
+
+
+class TestFrameIo:
+    @patch("app.tasks.pipeline.np.save", side_effect=OSError("disk full"))
+    def test_partial_frame_directory_is_removed_when_save_fails(
+        self, _mock_save, tmp_path
+    ):
+        temp_dir = tmp_path / "frames"
+        temp_dir.mkdir()
+
+        with (
+            patch("app.tasks.pipeline.tempfile.mkdtemp", return_value=str(temp_dir)),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            _save_frames_to_temp_dir([np.zeros((2, 2, 3), dtype=np.uint8)])
+
+        assert not temp_dir.exists()
 
 
 class TestUpdateAnalysisStatus:
@@ -503,18 +654,19 @@ class TestUpdateAnalysisStatus:
 
     @patch("app.tasks.pipeline.sync_session_factory")
     def test_update_status_rollback_on_exception(self, mock_session_factory, analysis_id):
-        """Status update should rollback on database exception."""
+        """Status update should rollback and surface database exceptions."""
         mock_session = MagicMock()
         mock_session_factory.return_value = mock_session
         mock_session.query.side_effect = Exception("DB connection lost")
 
-        # Should not raise
-        _update_analysis_status(analysis_id, STATUS_ANALYZING)
+        with pytest.raises(Exception, match="DB connection lost"):
+            _update_analysis_status(analysis_id, STATUS_ANALYZING)
 
         mock_session.rollback.assert_called_once()
         mock_session.close.assert_called_once()
 
 
+@pytest.mark.usefixtures("stub_preprocessing")
 class TestProcessingTimeTracking:
     """Test that processing time is tracked and returned."""
 

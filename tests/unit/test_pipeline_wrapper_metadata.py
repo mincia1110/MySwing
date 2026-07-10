@@ -12,7 +12,9 @@ from app.tasks.pipeline import (
     _apply_wrist_bat_fallback,
     _bat_length_to_meters,
     _build_analysis_metadata,
+    _mirror_bat_trajectory_horizontal,
     _quality_check_record_values,
+    _run_biomechanics_analysis,
     _run_pose_constrained_bat_tracking,
     _run_swing_classification,
     _trajectory_peak_speed,
@@ -234,6 +236,63 @@ def test_trajectory_peak_speed_prefers_bat_head_motion():
     assert _trajectory_peak_speed(trajectory) == pytest.approx(0.2)
 
 
+@pytest.mark.parametrize(
+    (
+        "coordinate_space",
+        "position",
+        "head",
+        "frame_width",
+        "expected_position",
+        "expected_head",
+    ),
+    [
+        (
+            "normalized",
+            (0.25, 0.4),
+            (0.4, 0.4),
+            640,
+            (0.75, 0.4),
+            (0.6, 0.4),
+        ),
+        (
+            "pixel",
+            (100.0, 40.0),
+            (150.0, 40.0),
+            640,
+            (539.0, 40.0),
+            (489.0, 40.0),
+        ),
+    ],
+)
+def test_mirror_bat_trajectory_respects_coordinate_space(
+    coordinate_space,
+    position,
+    head,
+    frame_width,
+    expected_position,
+    expected_head,
+):
+    detection = BatDetectionResult(
+        frame_index=0,
+        detected=True,
+        position=position,
+        orientation_angle=30.0,
+        length_pixels=0.25,
+        confidence=0.9,
+        is_predicted=True,
+        coordinate_space=coordinate_space,
+        bat_head_position=head,
+    )
+
+    _mirror_bat_trajectory_horizontal(
+        BatTrajectory(detections=[detection]), frame_width
+    )
+
+    assert detection.position == pytest.approx(expected_position)
+    assert detection.bat_head_position == pytest.approx(expected_head)
+    assert detection.orientation_angle == pytest.approx(150.0)
+
+
 def test_pose_constrained_tracking_falls_back_when_line_motion_collapses(monkeypatch):
     analysis_id = _analysis_id()
     wrist_prior = BatTrajectory(
@@ -300,3 +359,36 @@ def test_run_swing_classification_uses_batting_direction_param():
 
     assert result["status"] == "completed"
     assert result["phases"] == {}
+
+
+def test_biomechanics_phase_fallback_uses_actual_pose_frame_indices():
+    pose_sequence = [
+        {"frame_index": frame_index, "keypoints": []}
+        for frame_index in range(20, 30)
+    ]
+
+    with patch(
+        "app.pipeline.biomechanics_analyzer.BiomechanicsOrchestrator"
+    ) as orchestrator_class:
+        orchestrator_class.return_value.analyze.return_value = {}
+        result = _run_biomechanics_analysis(
+            _analysis_id(),
+            {"pose_sequence": pose_sequence},
+            {"bat_trajectory": {}},
+            {"phases": {}},
+            {"batting_direction": "left"},
+            30.0,
+        )
+
+    assert result["status"] == "completed"
+    phases = orchestrator_class.return_value.analyze.call_args.kwargs["swing_phases"]
+    assert orchestrator_class.return_value.analyze.call_args.kwargs["batting_direction"] == "left"
+    assert phases == {
+        "stride_start_frame": 21,
+        "stride_end_frame": 23,
+        "load_frame": 21,
+        "rotation_start_frame": 22,
+        "rotation_end_frame": 28,
+        "start_frame": 20,
+        "end_frame": 29,
+    }

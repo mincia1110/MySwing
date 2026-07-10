@@ -183,8 +183,12 @@ async def get_video_metadata(
                 logger.info("Video record saved for file_key=%s", file_key)
         except HTTPException:
             raise
-        except Exception as e:
-            logger.warning("Failed to save video record for %s: %s", file_key, e)
+        except Exception:
+            logger.exception("Failed to save video record for %s", file_key)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Video metadata could not be saved. Please retry.",
+            )
 
         input_validation = validate_single_swing_input_policy(metadata.duration_seconds)
         return VideoMetadataWithThumbnailResponse(
