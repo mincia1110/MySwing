@@ -35,6 +35,30 @@ class BatLineCandidate:
 class PoseConstrainedBatTracker:
     """Track bat line segments in a pose-constrained hand ROI."""
 
+    _BODY_CONNECTIONS = (
+        ("left_shoulder", "left_elbow"),
+        ("left_elbow", "left_wrist"),
+        ("right_shoulder", "right_elbow"),
+        ("right_elbow", "right_wrist"),
+        ("left_shoulder", "right_shoulder"),
+        ("left_shoulder", "left_hip"),
+        ("right_shoulder", "right_hip"),
+        ("left_hip", "right_hip"),
+        ("left_hip", "left_knee"),
+        ("left_knee", "left_ankle"),
+        ("right_hip", "right_knee"),
+        ("right_knee", "right_ankle"),
+    )
+    _FACE_KEYPOINTS = {
+        "nose",
+        "left_eye",
+        "right_eye",
+        "left_ear",
+        "right_ear",
+        "mouth_left",
+        "mouth_right",
+    }
+
     def __init__(
         self,
         min_keypoint_confidence: float = 0.3,
@@ -62,8 +86,6 @@ class PoseConstrainedBatTracker:
         wrist_prior: BatTrajectory | None = None,
     ) -> BatTrajectory:
         """Track a bat trajectory with line observations and wrist fallback."""
-        del fps  # Reserved for future temporal plausibility thresholds.
-
         if not frames:
             return wrist_prior if wrist_prior is not None else BatTrajectory()
 
@@ -96,18 +118,43 @@ class PoseConstrainedBatTracker:
                 sorted(candidates, key=lambda c: c.observation_score, reverse=True)[:5]
             )
 
-        selected = self._select_temporally(top_candidates)
+        selected = self._select_temporally(
+            top_candidates,
+            expected_length_px=expected_length_px,
+            video_width=width,
+            video_height=height,
+            fps=fps,
+        )
+        if len(selected) > 1:
+            selected = [
+                candidate
+                if candidate is not None
+                and (
+                    (index > 0 and selected[index - 1] is not None)
+                    or (index + 1 < len(selected) and selected[index + 1] is not None)
+                )
+                else None
+                for index, candidate in enumerate(selected)
+            ]
         line_detection_count = sum(1 for candidate in selected if candidate is not None)
         line_coverage = line_detection_count / len(frames) if frames else 0.0
+        has_temporal_pair = any(
+            previous is not None and current is not None
+            for previous, current in zip(selected, selected[1:])
+        )
 
         # A single-frame unit clip can be accepted with one strong observation.
         enough_line_signal = (
             line_detection_count >= 1
-            if len(frames) <= 2
-            else line_detection_count >= 2 and line_coverage >= 0.30
+            if len(frames) == 1
+            else line_detection_count >= 2
+            and line_coverage >= 0.30
+            and has_temporal_pair
         )
-        if not enough_line_signal and wrist_prior is not None:
-            return wrist_prior
+        if not enough_line_signal:
+            if wrist_prior is not None:
+                return wrist_prior
+            return self._empty_for_frames(len(frames))
 
         detections: list[BatDetectionResult] = []
         for frame_index, candidate in enumerate(selected):
@@ -297,7 +344,7 @@ class PoseConstrainedBatTracker:
         pose: PoseResult,
     ) -> BatLineCandidate | None:
         length = self._distance(p1_px, p2_px)
-        if length < expected_length_px * 0.35:
+        if not expected_length_px * 0.50 <= length <= expected_length_px * 1.75:
             return None
 
         d1 = self._distance(p1_px, hand_px)
@@ -305,16 +352,43 @@ class PoseConstrainedBatTracker:
         hand_side = p1_px if d1 <= d2 else p2_px
         head_px = p2_px if d1 <= d2 else p1_px
 
-        endpoint_score = max(0.0, 1.0 - min(d1, d2) / max(expected_length_px * 0.55, 1.0))
+        pose_points = self._pose_points_px(pose, video_width, video_height)
+        body_scale_px = self._body_scale_px(pose_points, expected_length_px)
+        handle_tolerance_px = max(
+            6.0,
+            min(expected_length_px * 0.18, body_scale_px * 0.25),
+        )
+        handle_distance_px = min(d1, d2)
+        if handle_distance_px > handle_tolerance_px:
+            return None
+
+        body_padding_px = max(
+            4.0,
+            min(expected_length_px * 0.16, body_scale_px * 0.18),
+        )
+        if not self._segment_leaves_athlete_region(
+            hand_side,
+            head_px,
+            pose_points,
+            body_padding_px,
+        ):
+            return None
+
+        endpoint_score = max(
+            0.0,
+            1.0 - handle_distance_px / max(handle_tolerance_px, 1.0),
+        )
         length_score = math.exp(
             -abs(length - expected_length_px) / max(expected_length_px * 0.75, 1.0)
         )
         angle = self._angle_deg(hand_side, head_px)
         angle_score = 0.5
         if angle_prior is not None:
-            angle_score = max(0.0, 1.0 - self._angle_delta(angle, angle_prior) / 90.0)
+            angle_delta = self._angle_delta(angle, angle_prior)
+            if angle_delta > 115.0:
+                return None
+            angle_score = max(0.0, 1.0 - angle_delta / 115.0)
         motion_score = self._motion_support(motion_mask, hand_side, head_px, roi_origin)
-        torso_penalty = self._torso_penalty(head_px, pose, video_width, video_height)
 
         score = (
             0.30 * endpoint_score
@@ -322,9 +396,9 @@ class PoseConstrainedBatTracker:
             + 0.20 * angle_score
             + 0.15 * motion_score
             + 0.10 * max(0.0, min(edge_support, 1.0))
-        ) * torso_penalty
+        )
 
-        if score < 0.25:
+        if score < 0.45:
             return None
 
         head_norm = (head_px[0] / video_width, head_px[1] / video_height)
@@ -346,13 +420,18 @@ class PoseConstrainedBatTracker:
         )
 
     def _select_temporally(
-        self, frame_candidates: list[list[BatLineCandidate]]
+        self,
+        frame_candidates: list[list[BatLineCandidate]],
+        expected_length_px: float,
+        video_width: int,
+        video_height: int,
+        fps: float,
     ) -> list[BatLineCandidate | None]:
         if not frame_candidates:
             return []
 
         states: list[list[BatLineCandidate | None]] = [
-            candidates if candidates else [None] for candidates in frame_candidates
+            [*candidates, None] for candidates in frame_candidates
         ]
         scores: list[list[float]] = []
         parents: list[list[int]] = []
@@ -368,7 +447,14 @@ class PoseConstrainedBatTracker:
                 best_prev_score = -1e9
                 best_prev_index = 0
                 for prev_idx, prev in enumerate(states[frame_idx - 1]):
-                    transition = self._transition_cost(prev, candidate)
+                    transition = self._transition_cost(
+                        prev,
+                        candidate,
+                        expected_length_px=expected_length_px,
+                        video_width=video_width,
+                        video_height=video_height,
+                        fps=fps,
+                    )
                     score = scores[frame_idx - 1][prev_idx] + observation - transition
                     if score > best_prev_score:
                         best_prev_score = score
@@ -391,17 +477,40 @@ class PoseConstrainedBatTracker:
         self,
         previous: BatLineCandidate | None,
         current: BatLineCandidate | None,
+        expected_length_px: float,
+        video_width: int,
+        video_height: int,
+        fps: float,
     ) -> float:
+        if previous is None and current is None:
+            return 0.0
         if previous is None or current is None:
-            return 0.08
-        head_jump = self._distance(previous.bat_head, current.bat_head)
-        angle_jump = self._angle_delta(previous.angle_deg, current.angle_deg) / 180.0
+            return 0.22
+
+        head_dx_px = (current.bat_head[0] - previous.bat_head[0]) * video_width
+        head_dy_px = (current.bat_head[1] - previous.bat_head[1]) * video_height
+        head_jump = math.hypot(head_dx_px, head_dy_px)
+        angle_jump = self._angle_delta(previous.angle_deg, current.angle_deg)
         length_jump = abs(previous.length_px - current.length_px) / max(
             previous.length_px,
             current.length_px,
             1.0,
         )
-        return 0.75 * min(head_jump / 0.25, 1.5) + 0.25 * angle_jump + 0.20 * length_jump
+        safe_fps = fps if math.isfinite(fps) and fps > 0.0 else 30.0
+        max_head_jump = expected_length_px * min(2.5, max(0.65, 50.0 / safe_fps))
+        max_angle_jump = min(165.0, max(55.0, 3600.0 / safe_fps))
+        if (
+            head_jump > max_head_jump
+            or angle_jump > max_angle_jump
+            or length_jump > 0.55
+        ):
+            return 2.0
+
+        return (
+            0.35 * head_jump / max(max_head_jump, 1.0)
+            + 0.12 * angle_jump / max(max_angle_jump, 1.0)
+            + 0.18 * length_jump
+        )
 
     def _hand_anchor(self, pose: PoseResult) -> tuple[float, float] | None:
         wrists = [
@@ -505,30 +614,144 @@ class PoseConstrainedBatTracker:
             return 0.0
         return float(image[ys[valid], xs[valid]].mean())
 
-    def _torso_penalty(
+    def _pose_points_px(
         self,
-        head_px: tuple[float, float],
         pose: PoseResult,
         video_width: int,
         video_height: int,
+    ) -> dict[str, tuple[float, float]]:
+        return {
+            keypoint.name: (keypoint.x * video_width, keypoint.y * video_height)
+            for keypoint in pose.keypoints
+            if keypoint.confidence >= self.min_keypoint_confidence
+        }
+
+    def _body_scale_px(
+        self,
+        points: dict[str, tuple[float, float]],
+        expected_length_px: float,
     ) -> float:
-        torso_names = {"left_shoulder", "right_shoulder", "left_hip", "right_hip"}
-        torso = [
-            (kp.x * video_width, kp.y * video_height)
-            for kp in pose.keypoints
-            if kp.name in torso_names and kp.confidence >= self.min_keypoint_confidence
+        measurements = [
+            self._distance(points[start], points[end])
+            for start, end in self._BODY_CONNECTIONS
+            if start in points and end in points
         ]
-        if len(torso) < 2:
-            return 1.0
-        min_x = min(p[0] for p in torso)
-        max_x = max(p[0] for p in torso)
-        min_y = min(p[1] for p in torso)
-        max_y = max(p[1] for p in torso)
-        pad = 0.04 * video_height
-        x, y = head_px
-        if min_x - pad <= x <= max_x + pad and min_y - pad <= y <= max_y + pad:
-            return 0.75
-        return 1.0
+        measurements = [measurement for measurement in measurements if measurement > 1.0]
+        if not measurements:
+            return expected_length_px
+        return float(np.median(measurements))
+
+    def _segment_leaves_athlete_region(
+        self,
+        hand_side_px: tuple[float, float],
+        head_px: tuple[float, float],
+        points: dict[str, tuple[float, float]],
+        padding_px: float,
+    ) -> bool:
+        outside_samples = []
+        for position in np.linspace(0.15, 1.0, 12):
+            point = (
+                hand_side_px[0] + (head_px[0] - hand_side_px[0]) * float(position),
+                hand_side_px[1] + (head_px[1] - hand_side_px[1]) * float(position),
+            )
+            outside_samples.append(
+                not self._point_in_athlete_region(point, points, padding_px)
+            )
+
+        minimum_outside = math.ceil(len(outside_samples) * 0.35)
+        return (
+            outside_samples[-1]
+            and sum(outside_samples) >= minimum_outside
+            and sum(outside_samples[-4:]) >= 3
+        )
+
+    def _point_in_athlete_region(
+        self,
+        point: tuple[float, float],
+        points: dict[str, tuple[float, float]],
+        padding_px: float,
+    ) -> bool:
+        torso_names = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
+        torso = [points[name] for name in torso_names if name in points]
+        if len(torso) >= 2 and self._point_in_padded_box(point, torso, padding_px):
+            return True
+
+        face = [points[name] for name in self._FACE_KEYPOINTS if name in points]
+        shoulder_points = [
+            points[name]
+            for name in ("left_shoulder", "right_shoulder")
+            if name in points
+        ]
+        shoulder_width = (
+            self._distance(shoulder_points[0], shoulder_points[1])
+            if len(shoulder_points) == 2
+            else 0.0
+        )
+        head_padding = max(padding_px * 1.5, shoulder_width * 0.15)
+        if face and self._point_in_padded_box(point, face, head_padding):
+            return True
+        if len(shoulder_points) == 2:
+            shoulder_midpoint = (
+                (shoulder_points[0][0] + shoulder_points[1][0]) / 2.0,
+                (shoulder_points[0][1] + shoulder_points[1][1]) / 2.0,
+            )
+            inferred_head = (
+                shoulder_midpoint[0],
+                shoulder_midpoint[1] - shoulder_width * 0.38,
+            )
+            if self._distance(point, inferred_head) <= max(
+                head_padding,
+                shoulder_width * 0.42,
+            ):
+                return True
+
+        if any(self._distance(point, body_point) <= padding_px for body_point in points.values()):
+            return True
+
+        return any(
+            start in points
+            and end in points
+            and self._distance_to_segment(point, points[start], points[end]) <= padding_px
+            for start, end in self._BODY_CONNECTIONS
+        )
+
+    def _point_in_padded_box(
+        self,
+        point: tuple[float, float],
+        box_points: list[tuple[float, float]],
+        padding_px: float,
+    ) -> bool:
+        x, y = point
+        return (
+            min(body_point[0] for body_point in box_points) - padding_px
+            <= x
+            <= max(body_point[0] for body_point in box_points) + padding_px
+            and min(body_point[1] for body_point in box_points) - padding_px
+            <= y
+            <= max(body_point[1] for body_point in box_points) + padding_px
+        )
+
+    def _distance_to_segment(
+        self,
+        point: tuple[float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> float:
+        segment_x = end[0] - start[0]
+        segment_y = end[1] - start[1]
+        length_squared = segment_x * segment_x + segment_y * segment_y
+        if length_squared <= 1e-9:
+            return self._distance(point, start)
+        projection = (
+            (point[0] - start[0]) * segment_x
+            + (point[1] - start[1]) * segment_y
+        ) / length_squared
+        projection = max(0.0, min(1.0, projection))
+        closest = (
+            start[0] + projection * segment_x,
+            start[1] + projection * segment_y,
+        )
+        return self._distance(point, closest)
 
     def _prior_angle(self, wrist_prior: BatTrajectory | None, frame_index: int) -> float | None:
         prior = self._prior_detection(wrist_prior, frame_index)

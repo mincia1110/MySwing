@@ -9,6 +9,7 @@ Requirements validated:
 - 3.4: Flag low-confidence frames (>5 frames or ≥40% occluded)
 """
 
+import numpy as np
 import pytest
 
 from app.models.pose import Keypoint, PoseResult
@@ -18,7 +19,6 @@ from app.pipeline.pose_tracker import (
     MAX_OCCLUSION_RATIO,
     PoseTracker,
 )
-
 
 # --- Helper functions ---
 
@@ -72,6 +72,36 @@ def make_pose_result(
         is_primary_batter=True,
         overall_confidence=confidence,
         is_low_confidence=False,
+    )
+
+
+def make_single_keypoint_result(
+    frame_index: int,
+    x: float,
+    y: float,
+    z: float,
+    confidence: float = 0.9,
+    overall_confidence: float | None = None,
+    is_low_confidence: bool = False,
+) -> PoseResult:
+    """Create a single-keypoint result for deterministic trajectory tests."""
+    return PoseResult(
+        frame_index=frame_index,
+        keypoints=[
+            Keypoint(
+                x=x,
+                y=y,
+                z=z,
+                confidence=confidence,
+                name="left_wrist",
+            )
+        ],
+        person_id=0,
+        is_primary_batter=True,
+        overall_confidence=(
+            confidence if overall_confidence is None else overall_confidence
+        ),
+        is_low_confidence=is_low_confidence,
     )
 
 
@@ -298,6 +328,25 @@ class TestInterpolation:
         # Linear interpolation: midpoint between (0.2, 0.4) and (0.6, 0.8)
         assert abs(frame1_wrist.x - 0.4) < 1e-6
         assert abs(frame1_wrist.y - 0.6) < 1e-6
+        assert frame1_wrist.confidence == pytest.approx(0.4)
+        assert tracked[1].overall_confidence == pytest.approx(0.8)
+
+    def test_no_leading_or_trailing_one_sided_interpolation(self):
+        """Unknown motion outside two observed endpoints should remain missing."""
+        tracker = PoseTracker()
+
+        full_names = ALL_KEYPOINT_NAMES
+        partial_names = [name for name in full_names if name != "left_wrist"]
+        results = [
+            make_pose_result(frame_index=0, keypoint_names=partial_names),
+            make_pose_result(frame_index=1, keypoint_names=full_names),
+            make_pose_result(frame_index=2, keypoint_names=partial_names),
+        ]
+
+        tracked = tracker.track_across_frames(results)
+
+        assert "left_wrist" not in {kp.name for kp in tracked[0].keypoints}
+        assert "left_wrist" not in {kp.name for kp in tracked[2].keypoints}
 
     def test_no_interpolation_when_occlusion_exceeds_40_percent(self):
         """No interpolation when ≥40% of keypoints are occluded."""
@@ -380,9 +429,189 @@ class TestInterpolation:
 
         # Frame at index 10 should have a different person_id
         assert tracked[0].person_id != tracked[1].person_id
-        # Interpolation within the second person's group should still work
+        # A following observation alone is insufficient for interpolation.
         frame10_names = {kp.name for kp in tracked[1].keypoints}
-        assert "left_wrist" in frame10_names  # interpolated from frame 11
+        assert "left_wrist" not in frame10_names
+
+
+# --- Tests for temporal conditioning ---
+
+
+class TestTemporalConditioning:
+    """Tests for confidence-aware offline trajectory conditioning."""
+
+    def test_exact_linear_and_constant_trajectories_are_preserved(self):
+        """Conditioning should not alter exact constant or linear coordinates."""
+        tracker = PoseTracker(enable_smoothing=True)
+        results = [
+            make_single_keypoint_result(
+                frame_index=frame_index,
+                x=0.15 + 0.025 * frame_index,
+                y=0.6,
+                z=-0.2 + 0.01 * frame_index,
+                confidence=0.85,
+                overall_confidence=0.1 if frame_index == 4 else 0.85,
+                is_low_confidence=frame_index == 4,
+            )
+            for frame_index in range(9)
+        ]
+
+        tracked = tracker.track_across_frames(results)
+
+        for result in tracked:
+            keypoint = result.keypoints[0]
+            assert keypoint.x == pytest.approx(
+                0.15 + 0.025 * result.frame_index, abs=1e-12
+            )
+            assert keypoint.y == pytest.approx(0.6, abs=1e-12)
+            assert keypoint.z == pytest.approx(
+                -0.2 + 0.01 * result.frame_index, abs=1e-12
+            )
+            assert keypoint.confidence == 0.85
+            assert result.overall_confidence == pytest.approx(0.85)
+        assert tracked[4].is_low_confidence is True
+
+    def test_clean_quadratic_is_preserved_in_interior_samples(self):
+        """A degree-two local fit should reproduce a clean quadratic path."""
+        tracker = PoseTracker(enable_smoothing=True)
+        results = [
+            make_single_keypoint_result(
+                frame_index=frame_index,
+                x=0.2 + 0.01 * frame_index + 0.002 * frame_index**2,
+                y=0.7 - 0.015 * frame_index + 0.001 * frame_index**2,
+                z=-0.1 + 0.0005 * frame_index**2,
+            )
+            for frame_index in range(11)
+        ]
+
+        tracked = tracker.track_across_frames(results)
+
+        for result in tracked[2:-2]:
+            frame_index = result.frame_index
+            keypoint = result.keypoints[0]
+            assert keypoint.x == pytest.approx(
+                0.2 + 0.01 * frame_index + 0.002 * frame_index**2,
+                abs=1e-12,
+            )
+            assert keypoint.y == pytest.approx(
+                0.7 - 0.015 * frame_index + 0.001 * frame_index**2,
+                abs=1e-12,
+            )
+            assert keypoint.z == pytest.approx(
+                -0.1 + 0.0005 * frame_index**2, abs=1e-12
+            )
+
+    def test_conditioning_reduces_quadratic_path_rmse_with_outlier(self):
+        """Local robust fitting should stabilize deterministic noisy samples."""
+        tracker = PoseTracker(enable_smoothing=True)
+        frame_indices = np.arange(13, dtype=np.float64)
+        expected = 0.18 + 0.018 * frame_indices + 0.0015 * frame_indices**2
+        jitter = np.asarray(
+            [
+                0.010,
+                -0.012,
+                0.009,
+                -0.011,
+                0.008,
+                -0.010,
+                0.160,
+                -0.009,
+                0.011,
+                -0.008,
+                0.010,
+                -0.011,
+                0.009,
+            ]
+        )
+        observed = expected + jitter
+        results = [
+            make_single_keypoint_result(
+                frame_index=int(frame_index),
+                x=float(observed[index]),
+                y=0.5,
+                z=0.0,
+                confidence=0.05 if index == 6 else 0.95,
+            )
+            for index, frame_index in enumerate(frame_indices)
+        ]
+
+        tracked = tracker.track_across_frames(results)
+
+        conditioned = np.asarray([result.keypoints[0].x for result in tracked])
+        raw_rmse = float(np.sqrt(np.mean((observed - expected) ** 2)))
+        conditioned_rmse = float(np.sqrt(np.mean((conditioned - expected) ** 2)))
+        assert conditioned_rmse < 0.6 * raw_rmse
+        assert tracked[6].keypoints[0].confidence == 0.05
+
+    def test_conditioning_does_not_cross_identity_boundaries(self):
+        """Separate person IDs should have independent local fits."""
+        tracker = PoseTracker(enable_smoothing=True)
+        results = [
+            *[
+                make_single_keypoint_result(frame_index=frame_index, x=0.1, y=0.2, z=0.0)
+                for frame_index in range(5)
+            ],
+            *[
+                make_single_keypoint_result(frame_index=frame_index, x=0.9, y=0.8, z=0.0)
+                for frame_index in range(10, 15)
+            ],
+        ]
+
+        tracked = tracker.track_across_frames(results)
+
+        assert tracked[4].person_id != tracked[5].person_id
+        for result in tracked[:5]:
+            assert result.keypoints[0].x == pytest.approx(0.1, abs=1e-12)
+        for result in tracked[5:]:
+            assert result.keypoints[0].x == pytest.approx(0.9, abs=1e-12)
+
+    def test_sparse_indices_use_frame_time_instead_of_sample_position(self):
+        """Irregular sampling should preserve a path linear in frame time."""
+        tracker = PoseTracker(enable_smoothing=True)
+        frame_indices = [0, 1, 4, 5, 8, 9, 12]
+        results = [
+            make_single_keypoint_result(
+                frame_index=frame_index,
+                x=0.12 + 0.02 * frame_index,
+                y=0.75 - 0.01 * frame_index,
+                z=0.005 * frame_index,
+            )
+            for frame_index in frame_indices
+        ]
+
+        tracked = tracker.track_across_frames(results)
+
+        assert len({result.person_id for result in tracked}) == 1
+        for result in tracked:
+            frame_index = result.frame_index
+            keypoint = result.keypoints[0]
+            assert keypoint.x == pytest.approx(
+                0.12 + 0.02 * frame_index, abs=1e-12
+            )
+            assert keypoint.y == pytest.approx(
+                0.75 - 0.01 * frame_index, abs=1e-12
+            )
+            assert keypoint.z == pytest.approx(0.005 * frame_index, abs=1e-12)
+
+    def test_fewer_than_three_usable_samples_are_unchanged(self):
+        """Sparse confidence support should leave original coordinates intact."""
+        tracker = PoseTracker(enable_smoothing=True)
+        results = [
+            make_single_keypoint_result(0, 0.1, 0.2, 0.3, confidence=0.9),
+            make_single_keypoint_result(1, 0.7, 0.8, 0.9, confidence=0.0),
+            make_single_keypoint_result(2, 0.2, 0.3, 0.4, confidence=0.9),
+        ]
+
+        tracked = tracker.track_across_frames(results)
+
+        assert tracked[1].keypoints[0].x == 0.7
+        assert tracked[1].keypoints[0].y == 0.8
+        assert tracked[1].keypoints[0].z == 0.9
+
+    def test_even_smoothing_window_is_rejected(self):
+        """Centered conditioning requires an odd local sample window."""
+        with pytest.raises(ValueError, match="odd"):
+            PoseTracker(smoothing_window=4)
 
 
 # --- Tests for low-confidence flagging ---

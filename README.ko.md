@@ -2,14 +2,14 @@
 
 [English](README.md) | 한국어
 
-파일 업로드 기반 야구 스윙 분석 서비스. MySwing은 정확히 한 번의 야구 스윙만 담긴 짧은 클립에 최적화되어 있습니다. 이상적인 입력은 약 5초이며, 권장 길이는 3~7초입니다. 10초를 초과하는 영상은 비용이 큰 분석 작업에 들어가기 전에 거절됩니다. Computer Vision(MediaPipe Pose + 손목/팔꿈치 기반 배트 추정)으로 신체 포즈와 배트를 인식하여 스포츠공학적/야구이론 기반 분석 리포트를 제공합니다.
+파일 업로드 기반 야구 스윙 분석 서비스. MySwing은 정확히 한 번의 야구 스윙만 담긴 짧은 클립에 최적화되어 있습니다. 이상적인 입력은 약 5초이며, 권장 길이는 3~7초입니다. 10초를 초과하는 영상은 비용이 큰 분석 작업에 들어가기 전에 거절됩니다. 정확도 우선 RTMPose ONNX 백엔드(MediaPipe 비교/대체 설정 지원)와 손목/팔꿈치 기반 배트 추정으로 신체 포즈와 배트를 인식하여 스포츠공학적/야구이론 기반 분석 리포트를 제공합니다.
 
 > 현재 프로젝트는 로컬 개발/검증용 Docker Compose 구성을 기준으로 합니다. 실제 배포 환경에서는 저장소, CORS, 파일 공개 범위, 인증/권한 정책을 별도로 설정해야 합니다.
 
 ## 주요 기능
 
 - **단일 스윙 비디오 업로드**: Presigned URL 기반 S3 직접 업로드 (mp4/mov/avi, 최대 500MB, 최대 10초)
-- **포즈 추정**: MediaPipe Pose 33개 랜드마크 감지 + 다중 프레임 추적/보간
+- **포즈 추정**: RTMPose-m ONNX 추론 + 단일 타자 선택 + 다중 프레임 추적/보간; MediaPipe 비교/대체 지원
 - **배트 추정**: 손목/팔꿈치 keypoint 기반 배트 헤드 추정 (WristBatEstimator)
 - **스윙 분류**: 6단계 (Stance -> Load -> Stride -> Rotation -> Impact -> Follow-through)
 - **생체역학 분석**: 배트 스피드, 공격각(attack_angle; API 노출값은 양수 bat-path magnitude), 운동 연쇄, 회전 분석, 핸드 패스 효율
@@ -33,7 +33,7 @@ Frontend -> FastAPI REST API -> Celery Worker
 |--------|------|
 | Backend | FastAPI, Python 3.12, SQLAlchemy, Pydantic |
 | Task Queue | Celery + Redis |
-| CV/ML | MediaPipe Pose, OpenCV |
+| CV/ML | RTMPose/ONNX Runtime, MediaPipe Pose, OpenCV |
 | Video | ffmpeg (H.264 인코딩) |
 | Storage | PostgreSQL, MinIO (S3 호환) |
 | Frontend | React, TypeScript, Vite |
@@ -262,7 +262,8 @@ MySwing/
 ## 개발 메모
 
 - `.env.example`은 로컬 Docker Compose 기본값을 담고 있습니다.
-- 실제 영상 분석에는 `mediapipe`가 필요하므로 backend 설치 시 `.[ml]` extra를 포함해야 합니다.
+- 실제 영상 분석에는 ML 백엔드가 필요합니다. `.[ml]`은 RTMPose/ONNX Runtime과 MediaPipe를 함께 설치하고, `.[rtmpose]`는 기본 RTMPose 런타임만 설치합니다.
+- RTMPose 모델은 첫 실행 때 `rtmlib`이 저장소 외부 캐시에 내려받습니다. 기존 비교 백엔드를 사용하려면 `MYSWING_POSE_BACKEND=mediapipe`로 설정하세요.
 - 배트 궤적은 현재 객체 감지 모델이 아니라 손목/팔꿈치 keypoint 기반 추정 경로를 사용합니다.
 - 업로드된 원본/오버레이 영상은 S3 호환 스토리지에 저장됩니다. 로컬 개발에서는 MinIO를 사용합니다.
 

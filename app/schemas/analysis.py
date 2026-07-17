@@ -1,7 +1,7 @@
 """Pydantic schemas for analysis API endpoints."""
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -134,14 +134,31 @@ class BatSpeedResponse(BaseModel):
     """Response schema for bat speed measurement."""
 
     speed_kmh: float
-    precision: float
+    precision: float = Field(
+        description=(
+            "Numeric reporting resolution in km/h; not validated measurement "
+            "accuracy or uncertainty"
+        )
+    )
 
 
 class LaunchAngleResponse(BaseModel):
     """Response schema for launch angle measurement."""
 
     angle_degrees: float
-    precision: float
+    precision: float = Field(
+        description=(
+            "Numeric reporting resolution in degrees; not validated measurement "
+            "accuracy or uncertainty"
+        )
+    )
+
+
+class UnmeasurableMetricResponse(BaseModel):
+    """A biomechanics metric that the available video could not support."""
+
+    metric_name: str
+    reason: str
 
 
 class BiomechanicsResponse(BaseModel):
@@ -158,6 +175,9 @@ class BiomechanicsResponse(BaseModel):
     front_knee_extension_degrees: Optional[float] = None
     front_knee_flexion_degrees: Optional[float] = None
     spine_angle_degrees: Optional[float] = None
+    unmeasurable_metrics: list[UnmeasurableMetricResponse] = Field(
+        default_factory=list
+    )
     processing_time_seconds: Optional[float] = None
 
 
@@ -172,6 +192,8 @@ class AnalysisReportResponse(BaseModel):
     quality_check: dict
     analysis_metadata: dict = Field(default_factory=dict)
     swing_phases: list[SwingPhaseResponse] = Field(default_factory=list)
+    phase_source: Optional[str] = None
+    phase_evidence: dict[str, Any] = Field(default_factory=dict)
     biomechanics: Optional[BiomechanicsResponse] = None
     metric_evaluations: list[MetricEvaluationResponse] = Field(default_factory=list)
     improvements: list[ImprovementAreaResponse] = Field(default_factory=list)

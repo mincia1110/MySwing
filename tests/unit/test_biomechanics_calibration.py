@@ -62,6 +62,7 @@ def _make_detection(
     confidence: float = 0.95,
     coordinate_space: str = "pixel",
     bat_head_position: tuple[float, float] | None = None,
+    is_predicted: bool = False,
 ) -> BatDetectionResult:
     """Create a BatDetectionResult with given parameters."""
     return BatDetectionResult(
@@ -71,7 +72,7 @@ def _make_detection(
         orientation_angle=45.0,
         length_pixels=length_pixels,
         confidence=confidence,
-        is_predicted=False,
+        is_predicted=is_predicted,
         coordinate_space=coordinate_space,
         bat_head_position=bat_head_position,
     )
@@ -402,6 +403,47 @@ class TestBatLengthScale:
 
         assert BiomechanicsOrchestrator._calibrate_from_bat_length(
             trajectory, bat_length_meters=0.85, video_width=1920, video_height=1080
+        ) is None
+
+    def test_bat_length_scale_uses_observed_normalized_line(self):
+        """A direct normalized line can scale its own observed displacement."""
+        trajectory = BatTrajectory(
+            detections=[
+                _make_detection(
+                    0,
+                    length_pixels=0.25,
+                    coordinate_space="normalized",
+                )
+            ]
+        )
+
+        scale = BiomechanicsOrchestrator._calibrate_from_bat_length(
+            trajectory,
+            bat_length_meters=0.90,
+            video_width=1000,
+            video_height=500,
+        )
+
+        assert scale == pytest.approx(0.90 / 125.0)
+
+    def test_bat_length_scale_ignores_predicted_normalized_prior(self):
+        """A wrist proxy's configured length must not calibrate measured speed."""
+        trajectory = BatTrajectory(
+            detections=[
+                _make_detection(
+                    0,
+                    length_pixels=0.25,
+                    coordinate_space="normalized",
+                    is_predicted=True,
+                )
+            ]
+        )
+
+        assert BiomechanicsOrchestrator._calibrate_from_bat_length(
+            trajectory,
+            bat_length_meters=0.90,
+            video_width=1000,
+            video_height=500,
         ) is None
 
 

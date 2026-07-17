@@ -19,6 +19,10 @@ def test_default_settings() -> None:
     assert settings.min_resolution_height == 720
     assert settings.min_frame_rate == 30.0
     assert settings.supported_formats == ["mp4", "mov", "avi"]
+    assert settings.pose_backend == "rtmpose"
+    assert settings.rtmpose_mode == "balanced"
+    assert settings.rtmpose_inference_backend == "onnxruntime"
+    assert settings.rtmpose_device == "cpu"
 
 
 @pytest.mark.unit

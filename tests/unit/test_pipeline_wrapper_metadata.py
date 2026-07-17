@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from app.models.bat import BatDetectionResult, BatTrajectory
+from app.models.pose import Keypoint, PoseResult
 from app.tasks.pipeline import (
     _apply_wrist_bat_fallback,
     _bat_length_to_meters,
@@ -16,6 +17,7 @@ from app.tasks.pipeline import (
     _quality_check_record_values,
     _run_biomechanics_analysis,
     _run_pose_constrained_bat_tracking,
+    _run_pose_estimation,
     _run_swing_classification,
     _trajectory_peak_speed,
     analyze_biomechanics_task,
@@ -115,7 +117,11 @@ def test_build_analysis_metadata_exposes_normalization_contract():
 @patch("app.tasks.pipeline._get_analysis_data")
 def test_classify_swing_task_uses_video_fps(mock_get_data, mock_run_swing_classification):
     analysis_id = _analysis_id()
-    mock_get_data.return_value = {"video_fps": 60.0}
+    mock_get_data.return_value = {
+        "video_fps": 60.0,
+        "video_width": 1080,
+        "video_height": 1920,
+    }
     mock_run_swing_classification.return_value = {"status": "completed", "phases": {}}
 
     classify_swing_task.apply(
@@ -126,6 +132,71 @@ def test_classify_swing_task_uses_video_fps(mock_get_data, mock_run_swing_classi
     call_args = mock_run_swing_classification.call_args[0]
     assert call_args[0] == analysis_id
     assert call_args[3] == 60.0
+    assert mock_run_swing_classification.call_args.kwargs["video_width"] == 1080
+    assert mock_run_swing_classification.call_args.kwargs["video_height"] == 1920
+
+
+def test_pose_estimation_uses_static_full_without_conditioning(monkeypatch):
+    """Production pose inference should use the selected benchmark candidate."""
+    captured_estimator = {}
+    captured_tracker = {}
+
+    class _Estimator:
+        def __init__(self, **kwargs):
+            captured_estimator.update(kwargs)
+            self.is_available = True
+
+        def process_frame(self, _frame, frame_index):
+            return PoseResult(
+                frame_index=frame_index,
+                keypoints=[
+                    Keypoint(
+                        x=0.5,
+                        y=0.5,
+                        z=0.0,
+                        confidence=0.9,
+                        name="head",
+                    )
+                ],
+                person_id=0,
+                is_primary_batter=True,
+                overall_confidence=0.9,
+                is_low_confidence=False,
+            )
+
+        def close(self):
+            return None
+
+    class _Tracker:
+        def __init__(self, **kwargs):
+            captured_tracker.update(kwargs)
+
+        def track_across_frames(self, pose_results):
+            return pose_results
+
+    monkeypatch.setattr(
+        "app.tasks.pipeline._load_frames_from_temp_dir",
+        lambda _frames_dir: [np.zeros((8, 8, 3), dtype=np.uint8)],
+    )
+    monkeypatch.setattr(
+        "app.pipeline.rtmpose_estimator.RTMPoseEstimator", _Estimator
+    )
+    monkeypatch.setattr("app.pipeline.pose_tracker.PoseTracker", _Tracker)
+
+    result = _run_pose_estimation(
+        _analysis_id(),
+        {"frames_dir": "/tmp/read-only-frames"},
+    )
+
+    assert result["status"] == "completed"
+    assert captured_estimator == {
+        "min_confidence": 0.5,
+        "mode": "balanced",
+        "inference_backend": "onnxruntime",
+        "device": "cpu",
+    }
+    assert captured_tracker == {"enable_smoothing": False}
+    assert result["pose_backend"] == "rtmpose"
 
 
 @patch("app.tasks.pipeline._run_biomechanics_analysis")
@@ -293,7 +364,7 @@ def test_mirror_bat_trajectory_respects_coordinate_space(
     assert detection.orientation_angle == pytest.approx(150.0)
 
 
-def test_pose_constrained_tracking_falls_back_when_line_motion_collapses(monkeypatch):
+def test_pose_constrained_tracking_prefers_observed_line_over_wrist_motion(monkeypatch):
     analysis_id = _analysis_id()
     wrist_prior = BatTrajectory(
         detections=[],
@@ -343,7 +414,9 @@ def test_pose_constrained_tracking_falls_back_when_line_motion_collapses(monkeyp
         wrist_result,
     )
 
-    assert result is wrist_result
+    assert result["method"] == "pose_constrained_bat_tracking"
+    assert result["fallback_method"] == "wrist_estimation"
+    assert result["bat_trajectory"]["tracking_accuracy"] == pytest.approx(1.0)
 
 
 def test_run_swing_classification_uses_batting_direction_param():
@@ -375,7 +448,7 @@ def test_biomechanics_phase_fallback_uses_actual_pose_frame_indices():
             _analysis_id(),
             {"pose_sequence": pose_sequence},
             {"bat_trajectory": {}},
-            {"phases": {}},
+            {"phases": {"impact": [25, 25]}},
             {"batting_direction": "left"},
             30.0,
         )

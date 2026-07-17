@@ -18,6 +18,7 @@ import type { AnalysisReportResponse, TrendDataResponse } from "../types/analysi
 import type { QualityCheckResponse } from "../types/video";
 import { useTranslation } from "../i18n";
 import { ComparisonView } from "./ComparisonView";
+import { BiomechanicsMeasurements } from "./BiomechanicsMeasurements";
 import { DrillRecommendationCard } from "./DrillRecommendationCard";
 import { ImprovementAreasList } from "./ImprovementAreasList";
 import { MetricsTable } from "./MetricsTable";
@@ -91,6 +92,11 @@ export function AnalysisReport({ report, trendData }: AnalysisReportProps) {
         />
         {qualityCheck ? <QualityCheckResult result={qualityCheck} /> : null}
       </div>
+
+      <BiomechanicsMeasurements
+        biomechanics={report.biomechanics}
+        phaseSource={report.phase_source}
+      />
 
       <div
         className="analysis-report__insights"

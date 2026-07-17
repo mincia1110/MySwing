@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple
 
-from app.models.bat import BatDetectionResult, BatTrajectory
+from app.models.bat import BatTrajectory
 from app.models.enums import SwingPhase
 from app.models.pose import Keypoint, PoseResult
 from app.models.swing import PhaseAnomaly, SwingPhaseResult, TransitionBoundary
@@ -62,6 +62,11 @@ MIN_SWING_FRAMES = 10
 # Window size for smoothing movement signals
 SMOOTHING_WINDOW = 3
 
+# Prefer the first substantial local bat-speed peak after rotation begins.
+# Contact-adjacent motion can be followed by an equal or larger wrist-speed
+# peak in follow-through, especially when the trajectory is a pose proxy.
+IMPACT_PEAK_RELATIVE_THRESHOLD = 0.85
+
 
 class SwingPhaseClassifier:
     """Classifies a baseball swing into six distinct phases.
@@ -81,6 +86,8 @@ class SwingPhaseClassifier:
         hip_rotation_threshold: float = HIP_ROTATION_THRESHOLD,
         bat_speed_decrease_ratio: float = BAT_SPEED_DECREASE_RATIO,
         batting_direction: str = "right",
+        video_width: float = 1.0,
+        video_height: float = 1.0,
     ) -> None:
         """Initialize SwingPhaseClassifier with detection thresholds.
 
@@ -94,7 +101,21 @@ class SwingPhaseClassifier:
             bat_speed_decrease_ratio: Ratio of speed decrease for follow-through.
             batting_direction: "right" or "left" — determines which keypoints
                 are used for back hip, power hand, and front ankle.
+            video_width: Video width in pixels. Used to make normalized x motion
+                comparable with normalized y motion.
+            video_height: Video height in pixels. Used as the coordinate scale.
         """
+        for name, value in (
+            ("video_width", video_width),
+            ("video_height", video_height),
+        ):
+            try:
+                is_valid = math.isfinite(value) and value > 0
+            except (TypeError, ValueError, OverflowError):
+                is_valid = False
+            if not is_valid:
+                raise ValueError(f"{name} must be a positive finite number")
+
         self.movement_threshold = movement_threshold
         self.hip_backward_threshold = hip_backward_threshold
         self.hand_backward_threshold = hand_backward_threshold
@@ -102,6 +123,11 @@ class SwingPhaseClassifier:
         self.ankle_stabilize_threshold = ankle_stabilize_threshold
         self.hip_rotation_threshold = hip_rotation_threshold
         self.bat_speed_decrease_ratio = bat_speed_decrease_ratio
+        self.video_width = float(video_width)
+        self.video_height = float(video_height)
+        self.x_scale = self.video_width / self.video_height
+        if not math.isfinite(self.x_scale) or self.x_scale <= 0:
+            raise ValueError("video aspect ratio must be a positive finite number")
 
         # Keypoint names depend on batting direction (Requirement 3.7)
         if batting_direction == "left":
@@ -207,6 +233,17 @@ class SwingPhaseClassifier:
         ankle_stable = self._compute_ankle_stabilize_signal(pose_sequence)
         hip_rotation = self._compute_hip_rotation_signal(pose_sequence)
         bat_speeds = self._get_bat_speeds(bat_trajectory, start_frame, end_frame)
+        impact_bat_speeds = bat_speeds
+        if any(
+            detection.is_predicted
+            or detection.coordinate_space == "normalized"
+            for detection in bat_trajectory.detections
+        ):
+            impact_bat_speeds = self._get_observed_bat_speeds(
+                bat_trajectory,
+                start_frame,
+                end_frame,
+            )
 
         # 1. Stance → Load: back hip or hands begin moving backward
         stance_to_load = self._find_stance_to_load(
@@ -250,10 +287,18 @@ class SwingPhaseClassifier:
                 )
             )
 
-        # 4. Rotation → Impact: bat speed reaches peak
-        rotation_to_impact = self._find_rotation_to_impact(
-            bat_speeds, start_frame, stride_to_rotation
-        )
+        # 4. Rotation → Impact: require detector-observed bat support. A wrist
+        # proxy may preserve trajectory continuity but is not contact evidence.
+        observed_bat_frames = {
+            detection.frame_index
+            for detection in bat_trajectory.detections
+            if detection.detected and not detection.is_predicted
+        }
+        rotation_to_impact = None
+        if len(observed_bat_frames) >= 3:
+            rotation_to_impact = self._find_rotation_to_impact(
+                impact_bat_speeds, start_frame, stride_to_rotation
+            )
         if rotation_to_impact is not None:
             transitions.append(
                 TransitionBoundary(
@@ -266,7 +311,7 @@ class SwingPhaseClassifier:
 
         # 5. Impact → Follow-through: bat speed begins decreasing
         impact_to_follow = self._find_impact_to_follow_through(
-            bat_speeds, start_frame, rotation_to_impact
+            impact_bat_speeds, start_frame, rotation_to_impact
         )
         if impact_to_follow is not None:
             transitions.append(
@@ -394,19 +439,19 @@ class SwingPhaseClassifier:
         failed_phases: List[str] = []
 
         for phase, (start_frame, end_frame) in phase_result.phases.items():
-            # Count frames in this phase region
-            total_frames = 0
+            # Missing whole-pose frames are unavailable evidence and belong in
+            # the denominator; filtering them before classification must not
+            # make a sparse phase look fully reliable.
+            total_frames = max(0, end_frame - start_frame + 1)
             low_confidence_frames = 0
 
             for frame_idx in range(start_frame, end_frame + 1):
-                if frame_idx in pose_by_frame:
-                    total_frames += 1
-                    pose = pose_by_frame[frame_idx]
-                    if (
-                        pose.is_low_confidence
-                        or pose.overall_confidence < KEYPOINT_CONFIDENCE_THRESHOLD
-                    ):
-                        low_confidence_frames += 1
+                pose = pose_by_frame.get(frame_idx)
+                if pose is None or (
+                    pose.is_low_confidence
+                    or pose.overall_confidence < KEYPOINT_CONFIDENCE_THRESHOLD
+                ):
+                    low_confidence_frames += 1
 
             # If more than 50% of frames are low-confidence, report failure
             if total_frames > 0 and (
@@ -439,7 +484,7 @@ class SwingPhaseClassifier:
 
     def _compute_hip_backward_signal(
         self, pose_sequence: List[PoseResult]
-    ) -> List[float]:
+    ) -> List[Optional[float]]:
         """Compute frame-by-frame hip backward movement signal.
 
         Measures the absolute x-displacement of the back hip between
@@ -452,23 +497,35 @@ class SwingPhaseClassifier:
         Returns:
             List of displacement values (length = len(pose_sequence) - 1).
         """
-        signals: List[float] = []
+        signals: List[Optional[float]] = []
         for i in range(1, len(pose_sequence)):
+            frame_gap = (
+                pose_sequence[i].frame_index
+                - pose_sequence[i - 1].frame_index
+            )
             prev_hip = self._get_keypoint_by_name(pose_sequence[i - 1], self._back_hip)
             curr_hip = self._get_keypoint_by_name(pose_sequence[i], self._back_hip)
 
-            if prev_hip and curr_hip and prev_hip.confidence >= 0.5 and curr_hip.confidence >= 0.5:
+            if (
+                frame_gap > 0
+                and prev_hip
+                and curr_hip
+                and prev_hip.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+                and curr_hip.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+            ):
                 # Backward movement = absolute x displacement of back hip
-                displacement = abs(curr_hip.x - prev_hip.x)
+                displacement = (
+                    abs(curr_hip.x - prev_hip.x) * self.x_scale / frame_gap
+                )
                 signals.append(displacement)
             else:
-                signals.append(0.0)
+                signals.append(None)
 
         return signals
 
     def _compute_hand_backward_signal(
         self, pose_sequence: List[PoseResult]
-    ) -> List[float]:
+    ) -> List[Optional[float]]:
         """Compute frame-by-frame hand backward movement signal.
 
         Measures absolute x-displacement of wrists between consecutive frames.
@@ -479,22 +536,36 @@ class SwingPhaseClassifier:
         Returns:
             List of displacement values (length = len(pose_sequence) - 1).
         """
-        signals: List[float] = []
+        signals: List[Optional[float]] = []
         for i in range(1, len(pose_sequence)):
+            frame_gap = (
+                pose_sequence[i].frame_index
+                - pose_sequence[i - 1].frame_index
+            )
             prev_wrist = self._get_keypoint_by_name(pose_sequence[i - 1], self._power_wrist)
             curr_wrist = self._get_keypoint_by_name(pose_sequence[i], self._power_wrist)
 
-            if prev_wrist and curr_wrist and prev_wrist.confidence >= 0.5 and curr_wrist.confidence >= 0.5:
-                displacement = abs(curr_wrist.x - prev_wrist.x)
+            if (
+                frame_gap > 0
+                and prev_wrist
+                and curr_wrist
+                and prev_wrist.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+                and curr_wrist.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+            ):
+                displacement = (
+                    abs(curr_wrist.x - prev_wrist.x)
+                    * self.x_scale
+                    / frame_gap
+                )
                 signals.append(displacement)
             else:
-                signals.append(0.0)
+                signals.append(None)
 
         return signals
 
     def _compute_ankle_lift_signal(
         self, pose_sequence: List[PoseResult]
-    ) -> List[float]:
+    ) -> List[Optional[float]]:
         """Compute frame-by-frame front ankle vertical movement signal.
 
         Measures upward (negative y in image coords) displacement of the
@@ -506,23 +577,33 @@ class SwingPhaseClassifier:
         Returns:
             List of displacement values (length = len(pose_sequence) - 1).
         """
-        signals: List[float] = []
+        signals: List[Optional[float]] = []
         for i in range(1, len(pose_sequence)):
+            frame_gap = (
+                pose_sequence[i].frame_index
+                - pose_sequence[i - 1].frame_index
+            )
             prev_ankle = self._get_keypoint_by_name(pose_sequence[i - 1], self._front_ankle)
             curr_ankle = self._get_keypoint_by_name(pose_sequence[i], self._front_ankle)
 
-            if prev_ankle and curr_ankle and prev_ankle.confidence >= 0.5 and curr_ankle.confidence >= 0.5:
+            if (
+                frame_gap > 0
+                and prev_ankle
+                and curr_ankle
+                and prev_ankle.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+                and curr_ankle.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+            ):
                 # In image coordinates, y decreases upward, so lift = prev_y - curr_y
-                displacement = prev_ankle.y - curr_ankle.y
+                displacement = (prev_ankle.y - curr_ankle.y) / frame_gap
                 signals.append(displacement)
             else:
-                signals.append(0.0)
+                signals.append(None)
 
         return signals
 
     def _compute_ankle_stabilize_signal(
         self, pose_sequence: List[PoseResult]
-    ) -> List[float]:
+    ) -> List[Optional[float]]:
         """Compute frame-by-frame front ankle stability signal.
 
         Measures absolute movement of the front ankle. Low values indicate
@@ -534,24 +615,34 @@ class SwingPhaseClassifier:
         Returns:
             List of absolute movement values (length = len(pose_sequence) - 1).
         """
-        signals: List[float] = []
+        signals: List[Optional[float]] = []
         for i in range(1, len(pose_sequence)):
+            frame_gap = (
+                pose_sequence[i].frame_index
+                - pose_sequence[i - 1].frame_index
+            )
             prev_ankle = self._get_keypoint_by_name(pose_sequence[i - 1], self._front_ankle)
             curr_ankle = self._get_keypoint_by_name(pose_sequence[i], self._front_ankle)
 
-            if prev_ankle and curr_ankle and prev_ankle.confidence >= 0.5 and curr_ankle.confidence >= 0.5:
-                dx = abs(curr_ankle.x - prev_ankle.x)
+            if (
+                frame_gap > 0
+                and prev_ankle
+                and curr_ankle
+                and prev_ankle.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+                and curr_ankle.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
+            ):
+                dx = abs(curr_ankle.x - prev_ankle.x) * self.x_scale
                 dy = abs(curr_ankle.y - prev_ankle.y)
-                movement = math.sqrt(dx * dx + dy * dy)
+                movement = math.sqrt(dx * dx + dy * dy) / frame_gap
                 signals.append(movement)
             else:
-                signals.append(0.0)
+                signals.append(None)
 
         return signals
 
     def _compute_hip_rotation_signal(
         self, pose_sequence: List[PoseResult]
-    ) -> List[float]:
+    ) -> List[Optional[float]]:
         """Compute frame-by-frame hip rotation signal.
 
         Measures the change in distance between left and right hips,
@@ -563,30 +654,39 @@ class SwingPhaseClassifier:
         Returns:
             List of rotation signal values (length = len(pose_sequence) - 1).
         """
-        signals: List[float] = []
+        signals: List[Optional[float]] = []
         for i in range(1, len(pose_sequence)):
+            frame_gap = (
+                pose_sequence[i].frame_index
+                - pose_sequence[i - 1].frame_index
+            )
             prev_left_hip = self._get_keypoint_by_name(pose_sequence[i - 1], "left_hip")
             prev_right_hip = self._get_keypoint_by_name(pose_sequence[i - 1], "right_hip")
             curr_left_hip = self._get_keypoint_by_name(pose_sequence[i], "left_hip")
             curr_right_hip = self._get_keypoint_by_name(pose_sequence[i], "right_hip")
 
             if (
-                prev_left_hip
+                frame_gap > 0
+                and prev_left_hip
                 and prev_right_hip
                 and curr_left_hip
                 and curr_right_hip
                 and all(
-                    kp.confidence >= 0.5
+                    kp.confidence >= KEYPOINT_CONFIDENCE_THRESHOLD
                     for kp in [prev_left_hip, prev_right_hip, curr_left_hip, curr_right_hip]
                 )
             ):
-                prev_dist = abs(prev_left_hip.x - prev_right_hip.x)
-                curr_dist = abs(curr_left_hip.x - curr_right_hip.x)
+                prev_dist = (
+                    abs(prev_left_hip.x - prev_right_hip.x) * self.x_scale
+                )
+                curr_dist = (
+                    abs(curr_left_hip.x - curr_right_hip.x) * self.x_scale
+                )
                 # Rotation causes the hip distance to change
-                rotation_signal = abs(curr_dist - prev_dist)
+                rotation_signal = abs(curr_dist - prev_dist) / frame_gap
                 signals.append(rotation_signal)
             else:
-                signals.append(0.0)
+                signals.append(None)
 
         return signals
 
@@ -622,11 +722,49 @@ class SwingPhaseClassifier:
 
         return speeds
 
+    def _get_observed_bat_speeds(
+        self,
+        bat_trajectory: BatTrajectory,
+        start_frame: int,
+        end_frame: int,
+    ) -> List[float]:
+        """Calculate per-frame motion from detector-observed bat points only."""
+        speeds = [0.0] * (end_frame - start_frame + 1)
+        observed = sorted(
+            (
+                detection
+                for detection in bat_trajectory.detections
+                if detection.detected and not detection.is_predicted
+            ),
+            key=lambda detection: detection.frame_index,
+        )
+        for previous, current in zip(observed, observed[1:]):
+            frame_span = current.frame_index - previous.frame_index
+            if frame_span <= 0:
+                continue
+            previous_point = previous.bat_head_position or previous.position
+            current_point = current.bat_head_position or current.position
+            dx = current_point[0] - previous_point[0]
+            dy = current_point[1] - previous_point[1]
+            if (
+                previous.coordinate_space == "normalized"
+                and current.coordinate_space == "normalized"
+            ):
+                dx *= self.video_width
+                dy *= self.video_height
+            elif previous.coordinate_space != current.coordinate_space:
+                continue
+            speed = math.hypot(dx, dy) / frame_span
+            frame_offset = current.frame_index - start_frame
+            if 0 <= frame_offset < len(speeds):
+                speeds[frame_offset] = speed
+        return speeds
+
     def _find_stance_to_load(
         self,
         pose_sequence: List[PoseResult],
-        hip_movement: List[float],
-        hand_movement: List[float],
+        hip_movement: List[Optional[float]],
+        hand_movement: List[Optional[float]],
     ) -> Optional[int]:
         """Find the transition frame from Stance to Load phase.
 
@@ -642,9 +780,14 @@ class SwingPhaseClassifier:
             Frame index of the transition, or None if not detected.
         """
         for i in range(len(hip_movement)):
+            hip_value = hip_movement[i]
+            hand_value = hand_movement[i]
             if (
-                hip_movement[i] > self.hip_backward_threshold
-                or hand_movement[i] > self.hand_backward_threshold
+                hip_value is not None
+                and hip_value > self.hip_backward_threshold
+            ) or (
+                hand_value is not None
+                and hand_value > self.hand_backward_threshold
             ):
                 return pose_sequence[i + 1].frame_index
 
@@ -653,7 +796,7 @@ class SwingPhaseClassifier:
     def _find_load_to_stride(
         self,
         pose_sequence: List[PoseResult],
-        ankle_lift: List[float],
+        ankle_lift: List[Optional[float]],
         stance_to_load: Optional[int],
     ) -> Optional[int]:
         """Find the transition frame from Load to Stride phase.
@@ -678,7 +821,10 @@ class SwingPhaseClassifier:
                     break
 
         for i in range(search_start, len(ankle_lift)):
-            if ankle_lift[i] > self.ankle_lift_threshold:
+            if (
+                ankle_lift[i] is not None
+                and ankle_lift[i] > self.ankle_lift_threshold
+            ):
                 return pose_sequence[i + 1].frame_index
 
         return None
@@ -686,8 +832,8 @@ class SwingPhaseClassifier:
     def _find_stride_to_rotation(
         self,
         pose_sequence: List[PoseResult],
-        ankle_stable: List[float],
-        hip_rotation: List[float],
+        ankle_stable: List[Optional[float]],
+        hip_rotation: List[Optional[float]],
         load_to_stride: Optional[int],
     ) -> Optional[int]:
         """Find the transition frame from Stride to Rotation phase.
@@ -708,28 +854,63 @@ class SwingPhaseClassifier:
         if load_to_stride is None:
             return None
 
-        # Start searching after the Load→Stride transition
-        search_start = 0
-        for idx, pose in enumerate(pose_sequence):
-            if pose.frame_index >= load_to_stride:
-                search_start = max(0, idx - 1)
-                break
+        # A real transition boundary must refer to a pose in this sequence.
+        stride_position = next(
+            (
+                idx
+                for idx, pose in enumerate(pose_sequence)
+                if pose.frame_index == load_to_stride
+            ),
+            None,
+        )
+        if stride_position is None:
+            return None
 
         # Need at least a few frames of stride before rotation
-        search_start = search_start + 2
+        search_start = max(0, stride_position - 1) + 2
 
-        for i in range(search_start, len(ankle_stable)):
-            ankle_planted = ankle_stable[i] < self.ankle_stabilize_threshold
-            hip_rotating = hip_rotation[i] > self.hip_rotation_threshold
+        stable_pairs: List[Tuple[int, int]] = []
+        for second_idx in range(search_start + 1, len(ankle_stable)):
+            first_idx = second_idx - 1
+            first_frame_gap = (
+                pose_sequence[first_idx + 1].frame_index
+                - pose_sequence[first_idx].frame_index
+            )
+            second_frame_gap = (
+                pose_sequence[second_idx + 1].frame_index
+                - pose_sequence[second_idx].frame_index
+            )
+            if first_frame_gap != 1 or second_frame_gap != 1:
+                continue
+            first_value = ankle_stable[first_idx]
+            second_value = ankle_stable[second_idx]
+            if (
+                first_value is not None
+                and second_value is not None
+                and first_value < self.ankle_stabilize_threshold
+                and second_value < self.ankle_stabilize_threshold
+            ):
+                stable_pairs.append((first_idx, second_idx))
 
-            if ankle_planted and hip_rotating:
-                return pose_sequence[i + 1].frame_index
+        # Prefer a planted pair with rotation on either stability sample or
+        # immediately next to the pair. If rotation follows the pair, report
+        # the later frame where both cues have become observable.
+        for first_idx, second_idx in stable_pairs:
+            rotation_start = max(0, first_idx - 1)
+            rotation_end = min(len(hip_rotation), second_idx + 2)
+            for rotation_idx in range(rotation_start, rotation_end):
+                rotation_value = hip_rotation[rotation_idx]
+                if (
+                    rotation_value is not None
+                    and rotation_value > self.hip_rotation_threshold
+                ):
+                    event_idx = max(second_idx, rotation_idx)
+                    return pose_sequence[event_idx + 1].frame_index
 
         # Fallback: if ankle plants but no clear hip rotation detected,
-        # look for just ankle stabilization after sufficient stride frames
-        for i in range(search_start, len(ankle_stable)):
-            if ankle_stable[i] < self.ankle_stabilize_threshold:
-                return pose_sequence[i + 1].frame_index
+        # use the first confirmed planted pair after sufficient stride frames.
+        if stable_pairs:
+            return pose_sequence[stable_pairs[0][1] + 1].frame_index
 
         return None
 
@@ -755,24 +936,30 @@ class SwingPhaseClassifier:
         if not bat_speeds or max(bat_speeds) == 0:
             return None
 
+        # Without a verified stride-to-rotation anchor, a wrist/forearm proxy
+        # can peak anywhere in the clip (including setup or follow-through).
+        # Accuracy takes precedence over fabricating an impact event.
+        if stride_to_rotation is None:
+            return None
+
         # Start searching after the Stride→Rotation transition
-        search_start = 0
-        if stride_to_rotation is not None:
-            search_start = stride_to_rotation - start_frame
+        search_start = stride_to_rotation - start_frame
 
         search_start = max(0, min(search_start, len(bat_speeds) - 1))
 
-        # Find the peak bat speed after rotation starts
-        max_speed = 0.0
-        max_speed_idx = search_start
+        smoothed = self._median_smooth(bat_speeds, SMOOTHING_WINDOW)
+        peak_speed = max(smoothed[search_start:], default=0.0)
+        if peak_speed <= 0.0:
+            return None
 
-        for i in range(search_start, len(bat_speeds)):
-            if bat_speeds[i] > max_speed:
-                max_speed = bat_speeds[i]
-                max_speed_idx = i
-
-        if max_speed > 0:
-            return start_frame + max_speed_idx
+        substantial_peak = peak_speed * IMPACT_PEAK_RELATIVE_THRESHOLD
+        last_index = len(smoothed) - 1
+        for i in range(search_start, len(smoothed)):
+            value = smoothed[i]
+            left = smoothed[i - 1] if i > search_start else float("-inf")
+            right = smoothed[i + 1] if i < last_index else float("-inf")
+            if value >= substantial_peak and value >= left and value >= right:
+                return start_frame + i
 
         return None
 
@@ -795,34 +982,63 @@ class SwingPhaseClassifier:
         Returns:
             Frame index of the transition, or None if not detected.
         """
+        if rotation_to_impact is None:
+            return None
+
         if not bat_speeds:
             return None
 
         # Start searching after the impact frame
-        search_start = 0
-        if rotation_to_impact is not None:
-            search_start = rotation_to_impact - start_frame + 1
+        search_start = rotation_to_impact - start_frame + 1
 
         search_start = max(0, min(search_start, len(bat_speeds) - 1))
 
-        # Find where speed drops below the threshold ratio of peak
-        peak_speed = max(bat_speeds) if bat_speeds else 0.0
+        smoothed = self._median_smooth(bat_speeds, SMOOTHING_WINDOW)
+
+        # Use the contact-adjacent local peak. A larger, later wrist-speed peak
+        # must not redefine the follow-through threshold for this impact event.
+        impact_offset = rotation_to_impact - start_frame
+        local_start = max(0, impact_offset - 1)
+        local_end = min(len(smoothed), impact_offset + 2)
+        peak_speed = max(smoothed[local_start:local_end], default=0.0)
         if peak_speed == 0:
             return None
 
         threshold = peak_speed * self.bat_speed_decrease_ratio
 
-        for i in range(search_start, len(bat_speeds)):
-            if bat_speeds[i] < threshold:
-                return start_frame + i
-
-        # If no clear decrease found, use the frame after peak + a few frames
-        if rotation_to_impact is not None:
-            follow_frame = rotation_to_impact + 2
-            if follow_frame <= start_frame + len(bat_speeds) - 1:
-                return follow_frame
+        below_run_start: int | None = None
+        below_run_length = 0
+        for i in range(search_start, len(smoothed)):
+            if smoothed[i] < threshold:
+                if below_run_start is None:
+                    below_run_start = i
+                below_run_length += 1
+                if below_run_length >= 2:
+                    return start_frame + below_run_start
+            else:
+                below_run_start = None
+                below_run_length = 0
 
         return None
+
+    @staticmethod
+    def _median_smooth(values: List[float], window: int) -> List[float]:
+        """Return a centered median-smoothed copy of a numeric signal."""
+        if not values:
+            return []
+        radius = max(0, window // 2)
+        smoothed: List[float] = []
+        for index in range(len(values)):
+            samples = values[
+                max(0, index - radius): min(len(values), index + radius + 1)
+            ]
+            ordered = sorted(samples)
+            middle = len(ordered) // 2
+            if len(ordered) % 2:
+                smoothed.append(float(ordered[middle]))
+            else:
+                smoothed.append(float((ordered[middle - 1] + ordered[middle]) / 2.0))
+        return smoothed
 
     def _build_phase_ranges(
         self,

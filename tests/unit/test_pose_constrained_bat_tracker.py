@@ -27,6 +27,31 @@ def _pose(frame_index: int, wrist: tuple[float, float] = (0.5, 0.5)) -> PoseResu
     )
 
 
+def _body_pose(frame_index: int) -> PoseResult:
+    return PoseResult(
+        frame_index=frame_index,
+        keypoints=[
+            _keypoint("nose", 0.50, 0.18),
+            _keypoint("left_eye", 0.47, 0.17),
+            _keypoint("right_eye", 0.53, 0.17),
+            _keypoint("left_ear", 0.44, 0.19),
+            _keypoint("right_ear", 0.56, 0.19),
+            _keypoint("left_shoulder", 0.42, 0.34),
+            _keypoint("right_shoulder", 0.58, 0.34),
+            _keypoint("left_elbow", 0.38, 0.46),
+            _keypoint("right_elbow", 0.62, 0.46),
+            _keypoint("left_wrist", 0.49, 0.52),
+            _keypoint("right_wrist", 0.51, 0.52),
+            _keypoint("left_hip", 0.44, 0.68),
+            _keypoint("right_hip", 0.56, 0.68),
+        ],
+        person_id=0,
+        is_primary_batter=True,
+        overall_confidence=0.9,
+        is_low_confidence=False,
+    )
+
+
 def _frame(width: int = 120, height: int = 100) -> np.ndarray:
     return np.zeros((height, width, 3), dtype=np.uint8)
 
@@ -65,6 +90,30 @@ def _prior(count: int = 3) -> BatTrajectory:
     return BatTrajectory(detections=detections, tracking_accuracy=1.0)
 
 
+def _score_body_segment(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    angle_prior: float | None = None,
+):
+    tracker = PoseConstrainedBatTracker()
+    return tracker._score_segment(
+        frame_index=0,
+        p1_px=start,
+        p2_px=end,
+        hand_px=(100.0, 52.0),
+        hand_norm=(0.50, 0.52),
+        expected_length_px=40.0,
+        video_width=200,
+        video_height=100,
+        angle_prior=angle_prior,
+        motion_mask=None,
+        roi_origin=(0, 0),
+        edge_support=1.0,
+        pose=_body_pose(0),
+    )
+
+
 def test_empty_frames_returns_fallback_trajectory() -> None:
     prior = _prior(2)
     tracker = PoseConstrainedBatTracker()
@@ -100,6 +149,36 @@ def test_synthetic_white_line_near_wrist_is_detected() -> None:
     assert detection.confidence > 0.25
 
 
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ((100.0, 52.0), (90.0, 32.0)),  # torso/shoulder edge
+        ((100.0, 52.0), (76.0, 46.0)),  # forearm edge back toward the elbow
+        ((100.0, 52.0), (100.0, 18.0)),  # helmet/face to hands
+        ((112.0, 28.0), (148.0, 28.0)),  # plausible background edge in the ROI
+        ((100.0, 52.0), (180.0, 52.0)),  # exceeds the bat-length prior
+    ],
+    ids=("torso", "forearm", "helmet", "background", "too-long"),
+)
+def test_body_and_background_lines_are_rejected(
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> None:
+    assert _score_body_segment(start, end) is None
+
+
+def test_hand_to_outside_body_bat_is_admitted_in_pixel_geometry() -> None:
+    candidate = _score_body_segment(
+        (100.0, 52.0),
+        (150.0, 52.0),
+        angle_prior=0.0,
+    )
+
+    assert candidate is not None
+    assert candidate.hand_anchor == (0.50, 0.52)
+    assert candidate.bat_head == pytest.approx((0.75, 0.52))
+
+
 def test_farther_endpoint_is_selected_as_bat_head_position() -> None:
     frame = _frame()
     # Hand at (0.5, 0.5) = (60, 50); line from hand toward right
@@ -128,6 +207,17 @@ def test_temporal_smoothing_avoids_one_frame_angle_jump() -> None:
     angles = [d.orientation_angle for d in result.detections if d.detected]
     assert len(angles) == 3
     assert max(abs(angle) for angle in angles) < 25.0
+
+
+def test_isolated_valid_line_abstains_without_temporal_support() -> None:
+    frames = [_frame() for _ in range(3)]
+    _draw_line(frames[1], (58, 50), (94, 50))
+    tracker = PoseConstrainedBatTracker()
+
+    result = tracker.track(frames, [_pose(0), _pose(1), _pose(2)], 120, 100, 30.0)
+
+    assert not any(detection.detected for detection in result.detections)
+    assert result.tracking_accuracy == 0.0
 
 
 def test_low_confidence_no_line_case_falls_back_to_wrist_prior() -> None:

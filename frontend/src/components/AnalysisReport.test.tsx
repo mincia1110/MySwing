@@ -80,6 +80,8 @@ describe("AnalysisReport", () => {
     expect(screen.getByTestId("quality-check")).toBeInTheDocument();
     expect(screen.getByTestId("analysis-report-hero")).toBeInTheDocument();
     expect(screen.getByTestId("analysis-report-insights")).toBeInTheDocument();
+    expect(screen.getByTestId("biomechanics-measurements")).toBeInTheDocument();
+    expect(screen.getByTestId("biomechanics-measurements-empty")).toBeInTheDocument();
     expect(screen.getByTestId("quality-check-framing")).toHaveAttribute(
       "data-status",
       "warning",
@@ -146,6 +148,47 @@ describe("AnalysisReport", () => {
   it("does not render TrendChart when trend data is missing", () => {
     render(<AnalysisReport report={baseReport} />);
     expect(screen.queryByTestId("trend-chart")).not.toBeInTheDocument();
+  });
+
+  it("passes raw biomechanics and phase provenance to the diagnostics panel", () => {
+    render(
+      <AnalysisReport
+        report={{
+          ...baseReport,
+          phase_source: "observed_bat_contact_only",
+          phase_evidence: { observed_non_predicted_bat_lines: 4 },
+          biomechanics: {
+            bat_speed: { speed_kmh: 98.4, precision: 1 },
+            attack_angle: { angle_degrees: -6.2, precision: 0.5 },
+            hand_path_efficiency: null,
+            stride_length_cm: null,
+            cog_sway_cm: null,
+            cog_drop_cm: null,
+            head_stability_cm: null,
+            front_knee_extension_degrees: null,
+            front_knee_flexion_degrees: null,
+            spine_angle_degrees: null,
+            unmeasurable_metrics: [
+              { metric_name: "stride_length_cm", reason: "Pose unavailable" },
+            ],
+            processing_time_seconds: 4.1,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("biomechanics-measurement-bat_speed")).toHaveTextContent(
+      "98.4 km/h",
+    );
+    expect(screen.getByTestId("biomechanics-measurement-attack_angle")).toHaveTextContent(
+      "-6.2°",
+    );
+    expect(screen.getByTestId("biomechanics-phase-source")).toHaveTextContent(
+      "검출기가 관측한 배트 접촉만 사용",
+    );
+    expect(screen.getByTestId("biomechanics-unmeasurable")).toHaveTextContent(
+      "Pose unavailable",
+    );
   });
 
   it("uses report.trend_data when no explicit trendData prop given", () => {

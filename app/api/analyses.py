@@ -396,10 +396,18 @@ async def get_analysis_report(
     phases_data = analysis_result.swing_phases_data or {}
     raw_phases_dict = {}
     phase_durations = {}
+    phase_source: str | None = None
+    phase_evidence: dict[str, Any] = {}
 
     if isinstance(phases_data, dict):
         raw_phases_dict = phases_data.get("phases", {})
         phase_durations = phases_data.get("phase_durations_ms", {})
+        stored_phase_source = phases_data.get("phase_source")
+        stored_phase_evidence = phases_data.get("phase_evidence")
+        if isinstance(stored_phase_source, str):
+            phase_source = stored_phase_source
+        if isinstance(stored_phase_evidence, dict):
+            phase_evidence = stored_phase_evidence
     elif isinstance(phases_data, list):
         # Legacy format: list of phase dicts
         for phase_item in phases_data:
@@ -463,6 +471,8 @@ async def get_analysis_report(
         quality_check=quality_check,
         analysis_metadata=_extract_analysis_metadata(analysis_result),
         swing_phases=swing_phases,
+        phase_source=phase_source,
+        phase_evidence=phase_evidence,
         biomechanics=biomechanics,
         metric_evaluations=metric_evaluations,
         improvements=improvements,

@@ -566,6 +566,8 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
             bat_result,
             fps,
             batting_direction=batting_direction,
+            video_width=video_width,
+            video_height=video_height,
         )
 
         # ---- Step 4: Biomechanics Analysis ----
@@ -832,8 +834,9 @@ def _run_pose_estimation(
     logger.info("Estimating pose for analysis_id=%s", analysis_id)
 
     try:
+        from app.core.config import settings
         from app.pipeline.batter_identifier import BatterIdentifier
-        from app.pipeline.pose_estimator import PoseEstimator
+        from app.pipeline.pose_backend import create_pose_estimator
         from app.pipeline.pose_tracker import PoseTracker
 
         frames_dir = preprocessing_result.get("frames_dir")
@@ -852,10 +855,7 @@ def _run_pose_estimation(
                 "status": "completed",
             }
 
-        # Create PoseEstimator with static_image_mode for batch processing
-        estimator = PoseEstimator(
-            min_confidence=0.5, static_image_mode=True
-        )
+        estimator = create_pose_estimator(min_confidence=0.5)
 
         try:
             # Process each frame
@@ -875,7 +875,10 @@ def _run_pose_estimation(
             }
 
         # Apply PoseTracker for multi-frame tracking + interpolation
-        tracker = PoseTracker()
+        # Robust local-polynomial conditioning remains available as an
+        # experiment, but increased segment-length variation on 5/6 local
+        # candidate pairs and removed the only directly correct contact event.
+        tracker = PoseTracker(enable_smoothing=False)
         tracked_results = tracker.track_across_frames(pose_results)
 
         # Filter out frames with no keypoints (can't analyze empty frames)
@@ -910,6 +913,7 @@ def _run_pose_estimation(
         return {
             "analysis_id": analysis_id,
             "pose_sequence": serialized,
+            "pose_backend": settings.pose_backend,
             "status": "completed",
         }
 
@@ -1049,22 +1053,6 @@ def _run_pose_constrained_bat_tracking(
         if line_detections == 0:
             return wrist_bat_result
 
-        line_peak_speed = _trajectory_peak_speed(trajectory)
-        wrist_peak_speed = _trajectory_peak_speed(wrist_prior)
-        if (
-            wrist_peak_speed > 0.0
-            and line_peak_speed > 0.0
-            and line_peak_speed < wrist_peak_speed * 0.95
-        ):
-            logger.info(
-                "Rejecting pose-constrained bat tracking for analysis_id=%s: "
-                "line peak speed %.4f does not preserve wrist prior %.4f",
-                analysis_id,
-                line_peak_speed,
-                wrist_peak_speed,
-            )
-            return wrist_bat_result
-
         return {
             "analysis_id": analysis_id,
             "bat_trajectory": _serialize_dataclass(trajectory),
@@ -1138,7 +1126,11 @@ def _apply_wrist_bat_fallback(
     )
 
 
-def _get_bat_detection_point(det: Any) -> tuple[float, float]:
+def _get_bat_detection_point(
+    det: Any,
+    video_width: float = 1.0,
+    video_height: float = 1.0,
+) -> tuple[float, float]:
     """Get the most representative bat point for motion metrics.
 
     Prefer bat_head_position when available; otherwise fall back to center.
@@ -1147,19 +1139,31 @@ def _get_bat_detection_point(det: Any) -> tuple[float, float]:
     if isinstance(det, dict):
         bat_head = det.get("bat_head_position")
         if isinstance(bat_head, (list, tuple)) and len(bat_head) >= 2:
-            return float(bat_head[0]), float(bat_head[1])
-        pos = det.get("position", (0.0, 0.0))
-        if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-            return float(pos[0]), float(pos[1])
-        return 0.0, 0.0
+            point = float(bat_head[0]), float(bat_head[1])
+        else:
+            pos = det.get("position", (0.0, 0.0))
+            point = (
+                (float(pos[0]), float(pos[1]))
+                if isinstance(pos, (list, tuple)) and len(pos) >= 2
+                else (0.0, 0.0)
+            )
+        coordinate_space = det.get("coordinate_space", "pixel")
+    else:
+        bat_head = getattr(det, "bat_head_position", None)
+        if isinstance(bat_head, (list, tuple)) and len(bat_head) >= 2:
+            point = float(bat_head[0]), float(bat_head[1])
+        else:
+            pos = getattr(det, "position", (0.0, 0.0))
+            point = (
+                (float(pos[0]), float(pos[1]))
+                if isinstance(pos, (list, tuple)) and len(pos) >= 2
+                else (0.0, 0.0)
+            )
+        coordinate_space = getattr(det, "coordinate_space", "pixel")
 
-    bat_head = getattr(det, "bat_head_position", None)
-    if isinstance(bat_head, (list, tuple)) and len(bat_head) >= 2:
-        return float(bat_head[0]), float(bat_head[1])
-    pos = getattr(det, "position", (0.0, 0.0))
-    if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-        return float(pos[0]), float(pos[1])
-    return 0.0, 0.0
+    if coordinate_space == "normalized":
+        return point[0] * video_width, point[1] * video_height
+    return point
 
 
 def _detection_detected(det: Any) -> bool:
@@ -1168,20 +1172,37 @@ def _detection_detected(det: Any) -> bool:
     return bool(getattr(det, "detected", False))
 
 
+def _detection_observed(det: Any) -> bool:
+    """Return whether a bat point came from a detector, not interpolation."""
+    if not _detection_detected(det):
+        return False
+    if isinstance(det, dict):
+        return not bool(det.get("is_predicted", False))
+    return not bool(getattr(det, "is_predicted", False))
+
+
 def _detection_frame_index(det: Any) -> int:
     if isinstance(det, dict):
         return int(det.get("frame_index", 0))
     return int(getattr(det, "frame_index", 0))
 
 
-def _estimate_impact_frame_from_bat_speed(bat_trajectory: Any) -> tuple[int, float, str]:
+def _estimate_impact_frame_from_bat_speed(
+    bat_trajectory: Any,
+    video_width: float = 1.0,
+    video_height: float = 1.0,
+) -> tuple[int, float, str]:
     """Estimate impact frame from smoothed bat-speed profile.
 
     Returns:
         (impact_frame, confidence, method)
     """
     detections = sorted(
-        [d for d in getattr(bat_trajectory, "detections", []) if _detection_detected(d)],
+        [
+            detection
+            for detection in getattr(bat_trajectory, "detections", [])
+            if _detection_observed(detection)
+        ],
         key=_detection_frame_index,
     )
     if len(detections) < 2:
@@ -1192,11 +1213,15 @@ def _estimate_impact_frame_from_bat_speed(bat_trajectory: Any) -> tuple[int, flo
     for i in range(1, len(detections)):
         d1 = detections[i - 1]
         d2 = detections[i]
-        p1 = _get_bat_detection_point(d1)
-        p2 = _get_bat_detection_point(d2)
+        p1 = _get_bat_detection_point(d1, video_width, video_height)
+        p2 = _get_bat_detection_point(d2, video_width, video_height)
         dx = p2[0] - p1[0]
         dy = p2[1] - p1[1]
-        raw_speeds.append(math.sqrt(dx * dx + dy * dy))
+        frame_span = max(
+            1,
+            _detection_frame_index(d2) - _detection_frame_index(d1),
+        )
+        raw_speeds.append(math.sqrt(dx * dx + dy * dy) / frame_span)
         frames.append(_detection_frame_index(d2))
 
     if not raw_speeds:
@@ -1253,6 +1278,8 @@ def _estimate_phases_from_speed(
     bat_trajectory: Any,
     pose_sequence: list,
     fps: float,
+    video_width: float = 1.0,
+    video_height: float = 1.0,
 ) -> tuple[dict, dict]:
     """Estimate swing phases from bat speed pattern when classifier fails.
 
@@ -1280,7 +1307,11 @@ def _estimate_phases_from_speed(
     if total_frames < 10:
         return {}, {}
 
-    peak_frame, _, _ = _estimate_impact_frame_from_bat_speed(bat_trajectory)
+    peak_frame, _, _ = _estimate_impact_frame_from_bat_speed(
+        bat_trajectory,
+        video_width,
+        video_height,
+    )
     if peak_frame <= 0:
         return {}, {}
     start_frame = detections[0].frame_index
@@ -1360,6 +1391,8 @@ def _run_swing_classification(
     bat_result: dict,
     fps: float,
     batting_direction: str = "right",
+    video_width: float = 1.0,
+    video_height: float = 1.0,
 ) -> dict[str, Any]:
     """Run swing phase classification step.
 
@@ -1398,7 +1431,11 @@ def _run_swing_classification(
         bat_trajectory = _deserialize_bat_trajectory(bat_trajectory_data)
 
         # Create classifier (batting_direction from user profile if available)
-        classifier = SwingPhaseClassifier(batting_direction=batting_direction)
+        classifier = SwingPhaseClassifier(
+            batting_direction=batting_direction,
+            video_width=video_width,
+            video_height=video_height,
+        )
 
         # Classify phases
         phase_result = classifier.classify_phases(
@@ -1408,10 +1445,9 @@ def _run_swing_classification(
         # Serialize result
         serialized = _serialize_dataclass(phase_result)
 
-        # Fallback: if no phases or core middle phases are missing, estimate from
-        # bat speed pattern. Real sample analyses can detect stance/load/impact
-        # while missing stride/rotation entirely; treating that partial result as
-        # complete makes downstream metrics unstable and leaves phase durations n/a.
+        # Preserve pose-derived phases exactly as observed. If contact alone is
+        # missing, an observed-line speed estimate may add a one-frame impact
+        # anchor, but it must not fabricate stance/load/stride/rotation windows.
         phases_dict = serialized.get("phases", {})
         expected_phases = {
             "stance",
@@ -1422,19 +1458,66 @@ def _run_swing_classification(
             "follow_through",
         }
         missing_core_phases = expected_phases.difference(phases_dict)
-        if (not phases_dict or missing_core_phases) and bat_trajectory.detections:
-            phases_dict, durations_dict = _estimate_phases_from_speed(
-                bat_trajectory, pose_sequence, fps
+        observed_bat_detections = sum(
+            1
+            for detection in bat_trajectory.detections
+            if detection.detected and not detection.is_predicted
+        )
+        phase_source = (
+            "pose_classifier"
+            if not missing_core_phases
+            else "partial_pose_classifier"
+        )
+        phase_evidence: dict[str, Any] = {
+            "missing_phases": sorted(missing_core_phases),
+            "observed_non_predicted_bat_lines": observed_bat_detections,
+        }
+        if "impact" not in phases_dict and observed_bat_detections >= 3:
+            impact_frame, impact_confidence, impact_method = (
+                _estimate_impact_frame_from_bat_speed(
+                    bat_trajectory,
+                    video_width,
+                    video_height,
+                )
             )
-            if phases_dict:
+            if impact_frame > 0:
+                phases_dict = dict(phases_dict)
+                phases_dict["impact"] = [impact_frame, impact_frame]
+                durations_dict = dict(
+                    serialized.get("phase_durations_ms", {})
+                )
+                durations_dict["impact"] = 0.0
                 serialized["phases"] = phases_dict
-                serialized["transitions"] = _transitions_from_phase_ranges(phases_dict)
                 serialized["phase_durations_ms"] = durations_dict
-                serialized["anomalies"] = []
+                phase_source = (
+                    "mixed_pose_and_observed_bat_contact"
+                    if len(phases_dict) > 1
+                    else "observed_bat_contact_only"
+                )
+                phase_evidence.update(
+                    {
+                        "impact_method": impact_method,
+                        "impact_confidence": impact_confidence,
+                        "impact_frame": impact_frame,
+                    }
+                )
                 logger.info(
-                    "Used speed-based phase estimation fallback for analysis_id=%s",
+                    "Added observed-line impact anchor for analysis_id=%s",
                     analysis_id,
                 )
+        elif "impact" not in phases_dict:
+            logger.info(
+                "Skipped impact fallback for analysis_id=%s: only %d "
+                "observed bat detections",
+                analysis_id,
+                observed_bat_detections,
+            )
+
+        # Recompute the missing set after an optional contact-only addition.
+        final_phases = serialized.get("phases", {})
+        phase_evidence["missing_phases_after_fallback"] = sorted(
+            expected_phases.difference(final_phases)
+        )
 
         return {
             "analysis_id": analysis_id,
@@ -1442,6 +1525,11 @@ def _run_swing_classification(
             "transitions": serialized.get("transitions", []),
             "phase_durations_ms": serialized.get("phase_durations_ms", {}),
             "anomalies": serialized.get("anomalies", []),
+            "classification_failures": serialized.get(
+                "classification_failures", []
+            ),
+            "phase_source": phase_source,
+            "phase_evidence": phase_evidence,
             "status": "completed",
         }
 
@@ -1457,6 +1545,9 @@ def _run_swing_classification(
             "transitions": [],
             "phase_durations_ms": {},
             "anomalies": [],
+            "classification_failures": [],
+            "phase_source": "unavailable",
+            "phase_evidence": {"error": str(e)},
             "status": "partial_failure",
             "error": str(e),
         }
@@ -1510,6 +1601,7 @@ def _run_biomechanics_analysis(
     unmeasurable_metrics: list[dict] = []
 
     try:
+        from app.models.biomechanics import BiomechanicsResult, UnmeasurableMetric
         from app.pipeline.biomechanics_analyzer import BiomechanicsOrchestrator
 
         # Deserialize inputs
@@ -1535,6 +1627,16 @@ def _run_biomechanics_analysis(
 
         pose_sequence = _deserialize_pose_sequence(pose_sequence_data)
         bat_trajectory = _deserialize_bat_trajectory(bat_trajectory_data)
+        video_width = (
+            preprocessing_result.get("video_width", 1920)
+            if preprocessing_result
+            else 1
+        )
+        video_height = (
+            preprocessing_result.get("video_height", 1080)
+            if preprocessing_result
+            else 1
+        )
 
         # Extract user calibration data
         user_height_cm = 175.0  # default
@@ -1547,35 +1649,34 @@ def _run_biomechanics_analysis(
 
         # Determine impact frame from swing phases
         phases = swing_phases_result.get("phases", {})
-        impact_frame = 0
-        # Look for impact phase — use the midpoint of the phase range
-        # since impact is an interval, not a single frame.
+        impact_frame: int | None = None
+        # The impact range starts at the contact anchor. Its end belongs to the
+        # phase presentation window and may extend toward follow-through.
         impact_phase = phases.get("impact", phases.get("IMPACT"))
-        if isinstance(impact_phase, (list, tuple)) and len(impact_phase) >= 2:
-            impact_frame = int((impact_phase[0] + impact_phase[1]) // 2)
-        elif isinstance(impact_phase, (list, tuple)) and len(impact_phase) >= 1:
+        if isinstance(impact_phase, (list, tuple)) and len(impact_phase) >= 1:
             impact_frame = int(impact_phase[0])
         elif isinstance(impact_phase, dict):
             start = impact_phase.get("start", 0)
-            end = impact_phase.get("end", start)
-            impact_frame = int((start + end) // 2) if end > start else int(start)
+            impact_frame = int(start)
 
         logger.info(
-            "Impact frame determination: impact_phase=%s, impact_frame=%d for analysis_id=%s",
+            "Impact frame determination: impact_phase=%s, impact_frame=%s for analysis_id=%s",
             impact_phase, impact_frame, analysis_id,
         )
 
-        impact_frame_method = "phase_midpoint"
+        impact_frame_method = "phase_start"
         impact_frame_confidence = 0.9
 
-        # If impact_frame is 0 (no explicit impact phase found),
+        # If no explicit impact phase was found,
         # estimate from smoothed bat-speed profile and expose confidence.
-        if impact_frame == 0:
+        if impact_frame is None:
             impact_frame_method = "smoothed_peak_speed"
             impact_frame_confidence = 0.0
             if bat_trajectory.detections and len(bat_trajectory.detections) > 1:
                 est_frame, est_confidence, est_method = _estimate_impact_frame_from_bat_speed(
-                    bat_trajectory
+                    bat_trajectory,
+                    video_width,
+                    video_height,
                 )
                 if est_frame > 0:
                     impact_frame = est_frame
@@ -1588,6 +1689,36 @@ def _run_biomechanics_analysis(
                         impact_frame_method,
                         analysis_id,
                     )
+
+        if impact_frame is None:
+            # Contact-relative body and bat metrics would otherwise be computed
+            # from arbitrary clip fractions or a predicted wrist peak. Preserve
+            # the report contract while explicitly abstaining.
+            unavailable = BiomechanicsResult(
+                unmeasurable_metrics=[
+                    UnmeasurableMetric(
+                        metric_name="impact_anchor",
+                        reason=(
+                            "No detector-observed bat evidence or explicit "
+                            "impact phase was available"
+                        ),
+                    )
+                ]
+            )
+            serialized = _serialize_dataclass(unavailable)
+            serialized.update(
+                {
+                    "analysis_id": analysis_id,
+                    "impact_frame": None,
+                    "impact_frame_method": "unavailable",
+                    "impact_frame_confidence": 0.0,
+                    "analysis_metadata": _build_analysis_metadata(
+                        preprocessing_result
+                    ),
+                    "status": "completed",
+                }
+            )
+            return serialized
 
         # Build swing_phases dict for orchestrator
         swing_phases_dict = {}
@@ -1649,17 +1780,6 @@ def _run_biomechanics_analysis(
         # Pose coordinates are normalized regardless of the bat detector. Bat
         # detections declare their own coordinate space and are scaled only when
         # normalized, so pixel trajectories can safely use the same dimensions.
-        video_width = (
-            preprocessing_result.get("video_width", 1920)
-            if preprocessing_result
-            else 1
-        )
-        video_height = (
-            preprocessing_result.get("video_height", 1080)
-            if preprocessing_result
-            else 1
-        )
-
         biomechanics_result = orchestrator.analyze(
             pose_sequence=pose_sequence,
             bat_trajectory=bat_trajectory,
@@ -1750,8 +1870,6 @@ def _run_swing_evaluation(
         from app.pipeline.report_generator import DrillRecommender
         from app.pipeline.swing_evaluator import (
             ImprovementRanker,
-            ModernPrinciplesEvaluator,
-            ReferenceComparator,
             WeightTransferAnalyzer,
         )
 
@@ -1807,23 +1925,21 @@ def _run_swing_evaluation(
             if biomechanics_result.get(field) is not None:
                 setattr(bio, field, biomechanics_result[field])
 
-        # Reference comparison
-        level = user_profile.get("level") if user_profile else None
-        age_group = user_profile.get("age_group") if user_profile else None
+        # Keep the projected measurements available, but do not turn them into
+        # normative grades. The bundled level/age ranges have no documented
+        # provenance for this monocular pipeline, and its current joint-angle
+        # peaks are not validated 3D segment kinetics.
+        evaluations = []
 
-        comparator = ReferenceComparator()
-        evaluations = comparator.compare_with_reference(
-            bio, level=level, age_group=age_group
-        )
-
-        # Modern principles evaluation
-        bat_trajectory = _deserialize_bat_trajectory(
-            bat_result.get("bat_trajectory", {})
-        )
-        principles_evaluator = ModernPrinciplesEvaluator()
-        principles_evaluation = principles_evaluator.evaluate_principles(
-            bio, bat_trajectory, fps
-        )
+        # These principles remain explicitly unavailable until contact, pitch
+        # plane, and 3D segment-velocity measurements are independently validated.
+        principles_evaluation = {
+            "measurement_status": "unavailable",
+            "reason": (
+                "Normative scoring and 3D kinematic-sequence claims are not "
+                "validated for monocular projected landmarks"
+            ),
+        }
 
         # Weight transfer analysis
         pose_sequence_data = pose_result.get("pose_sequence", [])
@@ -2147,6 +2263,8 @@ def classify_swing_task(
     logger.info("Classifying swing phases for analysis_id=%s", analysis_id)
     analysis_data = _get_analysis_data(analysis_id) or {}
     fps = analysis_data.get("video_fps", 30.0)
+    video_width = analysis_data.get("video_width", 1.0) or 1.0
+    video_height = analysis_data.get("video_height", 1.0) or 1.0
     return _run_swing_classification(
         analysis_id,
         pose_result,
@@ -2154,6 +2272,8 @@ def classify_swing_task(
         fps,
         # Wrapper path is canonical RHB unless future metadata says otherwise.
         batting_direction="right",
+        video_width=video_width,
+        video_height=video_height,
     )
 
 

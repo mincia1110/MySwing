@@ -122,6 +122,11 @@ export interface LaunchAngleResponse {
   precision: number;
 }
 
+export interface UnmeasurableMetricResponse {
+  metric_name: string;
+  reason: string;
+}
+
 export interface BiomechanicsResponse {
   bat_speed: BatSpeedResponse | null;
   attack_angle: LaunchAngleResponse | null;
@@ -133,6 +138,8 @@ export interface BiomechanicsResponse {
   front_knee_extension_degrees: number | null;
   front_knee_flexion_degrees: number | null;
   spine_angle_degrees: number | null;
+  /** Omitted by reports created before measurement provenance was exposed. */
+  unmeasurable_metrics?: UnmeasurableMetricResponse[];
   processing_time_seconds: number | null;
 }
 
@@ -145,6 +152,10 @@ export interface AnalysisReportResponse {
   quality_check: Record<string, unknown>;
   analysis_metadata: AnalysisMetadataResponse;
   swing_phases: SwingPhaseResponse[];
+  /** Omitted by legacy reports that predate phase provenance. */
+  phase_source?: string | null;
+  /** Omitted by legacy reports that predate phase provenance. */
+  phase_evidence?: Record<string, unknown>;
   biomechanics: BiomechanicsResponse | null;
   metric_evaluations: MetricEvaluationResponse[];
   improvements: ImprovementAreaResponse[];

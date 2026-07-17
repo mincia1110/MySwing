@@ -10,19 +10,14 @@ Tests:
 Validates: Requirements 5.4, 5.5
 """
 
-import pytest
 
 from app.models.bat import BatDetectionResult, BatTrajectory
 from app.models.enums import SwingPhase
 from app.models.pose import Keypoint, PoseResult
-from app.models.swing import PhaseAnomaly, SwingPhaseResult, TransitionBoundary
+from app.models.swing import SwingPhaseResult, TransitionBoundary
 from app.pipeline.swing_classifier import (
-    KEYPOINT_CONFIDENCE_THRESHOLD,
-    LOW_CONFIDENCE_FRAME_RATIO,
-    MIN_PHASE_DURATION_MS,
     SwingPhaseClassifier,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -254,7 +249,11 @@ class TestDetectClassificationFailures:
                 # More than 50% of frames in ROTATION are low confidence
                 is_low = i <= 36  # 7 out of 11 frames are low confidence (~64%)
                 pose_sequence.append(
-                    _make_pose(i, overall_confidence=0.3 if is_low else 0.9, is_low_confidence=is_low)
+                    _make_pose(
+                        i,
+                        overall_confidence=0.3 if is_low else 0.9,
+                        is_low_confidence=is_low,
+                    )
                 )
             else:
                 pose_sequence.append(_make_pose(i))
@@ -299,7 +298,11 @@ class TestDetectClassificationFailures:
                 # 5 out of 11 frames are low confidence (~45%)
                 is_low = i <= 24
                 pose_sequence.append(
-                    _make_pose(i, overall_confidence=0.3 if is_low else 0.9, is_low_confidence=is_low)
+                    _make_pose(
+                        i,
+                        overall_confidence=0.3 if is_low else 0.9,
+                        is_low_confidence=is_low,
+                    )
                 )
             else:
                 pose_sequence.append(_make_pose(i))
@@ -331,6 +334,29 @@ class TestDetectClassificationFailures:
 
         assert "load" in failures
         assert "rotation" in failures
+
+    def test_missing_pose_frames_count_as_unavailable_phase_evidence(self):
+        """Sparse surviving poses cannot hide a mostly missing phase span."""
+        classifier = SwingPhaseClassifier()
+        phase_result = _make_full_phase_result()
+        pose_sequence = [
+            _make_pose(frame_index)
+            for frame_index in (0, 10, 20, 30, 40, 50, 60)
+        ]
+
+        failures = classifier.detect_classification_failures(
+            pose_sequence,
+            phase_result,
+        )
+
+        assert set(failures) == {
+            "stance",
+            "load",
+            "stride",
+            "rotation",
+            "impact",
+            "follow_through",
+        }
 
     def test_empty_pose_sequence_returns_no_failures(self):
         """Empty pose sequence should return no failures."""

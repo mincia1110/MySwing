@@ -36,23 +36,18 @@ _RIGHT_ANKLE_KEYPOINT_NAME = "right_ankle"
 # Bat length verification threshold (15%)
 BAT_LENGTH_DISCREPANCY_THRESHOLD = 0.15
 
-# Bat speed precision (±1 km/h)
+# Bat-speed numeric reporting resolution. This is not a validated uncertainty.
 BAT_SPEED_PRECISION_KMH = 1.0
 
 # Number of frames around impact to use for speed calculation
 IMPACT_FRAME_WINDOW = 2
-
-# Wrist/elbow-based bat estimation tracks a proxy for the barrel. In practice
-# this underestimates true barrel speed, so apply a calibrated multiplier only
-# for predicted wrist-derived trajectories.
-WRIST_PROXY_BARREL_SPEED_MULTIPLIER = 1.7
 
 # Upper guardrail for selecting an impact metric frame. Values above this are
 # usually pose identity swaps or wrist-estimator jumps rather than real barrel
 # speed. 160 km/h is above typical elite MLB swing speeds.
 MAX_PLAUSIBLE_BAT_SPEED_KMH = 160.0
 
-# Launch angle and attack angle precision (±0.5°)
+# Angle numeric reporting resolution. This is not a validated uncertainty.
 ANGLE_PRECISION_DEGREES = 0.5
 
 # Hitting zone duration before impact (150ms)
@@ -396,7 +391,7 @@ class BatSpeedCalculator:
 
     Uses bat head positions around the impact frame (±2 frames) when available,
     and falls back to center positions otherwise, to calculate bat speed in km/h
-    with ±1 km/h precision.
+    with 1 km/h reporting resolution (not measurement uncertainty).
 
     Requirement 6.3: Calculate bat speed in km/h at impact zone.
     """
@@ -514,7 +509,8 @@ class ImpactAttackAngleCalculator:
     and the horizontal axis. A positive angle indicates upward bat movement,
     negative indicates downward.
 
-    Requirement 6.4: Calculate launch angle at impact with ±0.5° precision.
+        The result uses 0.5° numeric reporting resolution; this is not a
+        measurement-accuracy or uncertainty claim.
     """
 
     @staticmethod
@@ -626,7 +622,8 @@ class AttackAngleCalculator:
     The attack angle is the average angle of the bat's velocity vector
     relative to the horizontal through the hitting zone (150ms before impact).
 
-    Requirement 6.8: Calculate attack angle through hitting zone with ±0.5° precision.
+    The result uses 0.5° numeric reporting resolution; this is not a
+    measurement-accuracy or uncertainty claim.
     """
 
     def calculate_attack_angle(
@@ -1339,6 +1336,72 @@ class BiomechanicsOrchestrator:
         self._rotation_analyzer = RotationAnalyzer()
         self._hand_path_analyzer = HandPathAnalyzer()
 
+    @staticmethod
+    def _is_observed_bat_line(detection: BatDetectionResult) -> bool:
+        """Return whether a detection is a detector-observed bat line."""
+        return detection.detected and not detection.is_predicted
+
+    @classmethod
+    def _observed_bat_frames(
+        cls,
+        bat_trajectory: BatTrajectory,
+        start_frame: int,
+        end_frame: int,
+    ) -> set[int]:
+        """Return unique observed-line frame indices within an inclusive window."""
+        return {
+            detection.frame_index
+            for detection in bat_trajectory.detections
+            if start_frame <= detection.frame_index <= end_frame
+            and cls._is_observed_bat_line(detection)
+        }
+
+    @classmethod
+    def _has_observed_speed_support(
+        cls,
+        bat_trajectory: BatTrajectory,
+        impact_frame: int,
+    ) -> bool:
+        """Return whether at least three observed lines support impact speed."""
+        observed_frames = cls._observed_bat_frames(
+            bat_trajectory,
+            impact_frame - 10,
+            impact_frame + 2,
+        )
+        return len(observed_frames) >= 3
+
+    @classmethod
+    def _has_observed_impact_pair(
+        cls,
+        bat_trajectory: BatTrajectory,
+        metric_frame: int,
+    ) -> bool:
+        """Return whether metric_frame-1 and metric_frame are observed lines."""
+        observed_frames = cls._observed_bat_frames(
+            bat_trajectory,
+            metric_frame - 1,
+            metric_frame,
+        )
+        return {metric_frame - 1, metric_frame}.issubset(observed_frames)
+
+    @classmethod
+    def _observed_bat_trajectory(
+        cls,
+        bat_trajectory: BatTrajectory,
+    ) -> BatTrajectory:
+        """Return a metric-only trajectory containing detector observations.
+
+        Interpolated wrist/trajectory points are useful for continuity and
+        visualization, but must not influence measured barrel displacement.
+        """
+        return BatTrajectory(
+            detections=[
+                detection
+                for detection in bat_trajectory.detections
+                if cls._is_observed_bat_line(detection)
+            ]
+        )
+
     def _select_impact_metric_frame(
         self,
         bat_trajectory: BatTrajectory,
@@ -1350,44 +1413,29 @@ class BiomechanicsOrchestrator:
     ) -> int:
         """Choose a robust frame for bat speed/impact-angle metrics.
 
-        The phase midpoint remains the canonical impact frame, but wrist-derived
-        bat-head trajectories can shift the strongest local movement by several
-        frames. For speed/angle metrics, search a small pre-impact zone and pick
-        the highest-speed frame with a physically plausible 2-frame angle. Do
-        not drift into pre-impact frames when no impact-adjacent bat detections
-        are available; in that case downstream metrics should remain
-        unmeasurable.
+        The phase midpoint remains the canonical impact frame. Search a small
+        impact-adjacent zone and pick the highest-speed frame whose current and
+        previous bat lines were both observed. If no observed pair is available,
+        keep the canonical frame so downstream validity guards can abstain.
         """
-        try:
-            self._impact_attack_angle_calculator.calculate_launch_angle(
-                bat_trajectory,
-                impact_frame,
-                video_width=video_width,
-                video_height=video_height,
-            )
-        except CalibrationError:
-            return impact_frame
-
+        observed_trajectory = self._observed_bat_trajectory(bat_trajectory)
         best_frame = impact_frame
         best_speed = float("-inf")
         for frame in range(max(0, impact_frame - 10), impact_frame + 3):
+            if not self._has_observed_impact_pair(bat_trajectory, frame):
+                continue
             try:
-                angle = self._impact_attack_angle_calculator.calculate_launch_angle(
-                    bat_trajectory,
+                self._impact_attack_angle_calculator.calculate_launch_angle(
+                    observed_trajectory,
                     frame,
                     video_width=video_width,
                     video_height=video_height,
                 )
-                if not (-45.0 <= angle.angle_degrees <= 60.0):
-                    continue
                 speed = self._bat_speed_calculator.calculate_bat_speed(
-                    bat_trajectory,
+                    observed_trajectory,
                     frame,
                     pixel_to_meter,
                     fps,
-                    barrel_speed_multiplier=self._bat_speed_multiplier(
-                        bat_trajectory
-                    ),
                 )
             except CalibrationError:
                 continue
@@ -1399,38 +1447,6 @@ class BiomechanicsOrchestrator:
         return best_frame
 
     @staticmethod
-    def _normalize_reported_attack_angle(
-        angle: LaunchAngleResult,
-    ) -> LaunchAngleResult:
-        """Normalize signed impact angle to report-facing attack-angle magnitude.
-
-        ``ImpactAttackAngleCalculator`` intentionally returns a signed 2-frame
-        angle for low-level diagnostics. The product metric named
-        ``attack_angle`` is evaluated against positive hitting-path references
-        (5-25°), so expose the magnitude while preserving the measurement
-        frame and precision.
-        """
-        if angle.angle_degrees < 0.0:
-            return LaunchAngleResult(
-                angle_degrees=abs(angle.angle_degrees),
-                precision=angle.precision,
-                impact_frame=angle.impact_frame,
-            )
-        return angle
-
-    @staticmethod
-    def _bat_speed_multiplier(bat_trajectory: BatTrajectory) -> float:
-        """Return speed multiplier for proxy bat trajectories."""
-        detected = [d for d in bat_trajectory.detections if d.detected]
-        if not detected:
-            return 1.0
-
-        predicted_count = sum(1 for d in detected if d.is_predicted)
-        if predicted_count / len(detected) >= 0.8:
-            return WRIST_PROXY_BARREL_SPEED_MULTIPLIER
-        return 1.0
-
-    @staticmethod
     def _calibrate_from_bat_length(
         bat_trajectory: BatTrajectory,
         bat_length_meters: float,
@@ -1439,9 +1455,10 @@ class BiomechanicsOrchestrator:
     ) -> float | None:
         """Estimate coordinate-to-meter scale from known bat length.
 
-        Wrist-based trajectories store the configured bat length in the same
-        coordinate space as the estimated bat head. This gives a better scale
-        than body height when portrait or zoomed clips cut off the lower body.
+        Only detector-observed normalized bat lines are calibration evidence.
+        Predicted wrist/interpolated lengths encode the configured prior and
+        would make the calibration circular; arbitrary pixel detector lengths
+        have no declared normalization provenance.
         """
         if bat_length_meters <= 0:
             return None
@@ -1453,7 +1470,8 @@ class BiomechanicsOrchestrator:
             for d in bat_trajectory.detections
             if d.detected
             and d.length_pixels > 0
-            and (d.is_predicted or d.coordinate_space == "normalized")
+            and not d.is_predicted
+            and d.coordinate_space == "normalized"
         ]
         if not lengths:
             return None
@@ -1474,6 +1492,24 @@ class BiomechanicsOrchestrator:
         setattr(result, metric_name, None)
         unmeasurable_metrics.append(
             UnmeasurableMetric(metric_name=metric_name, reason=reason)
+        )
+
+    @staticmethod
+    def _mark_bat_metric_unmeasurable(
+        result: BiomechanicsResult,
+        unmeasurable_metrics: list[UnmeasurableMetric],
+        metric_name: str,
+        reason: str,
+    ) -> None:
+        """Record at most one unmeasurable reason for a bat metric."""
+        if any(metric.metric_name == metric_name for metric in unmeasurable_metrics):
+            setattr(result, metric_name, None)
+            return
+        BiomechanicsOrchestrator._mark_metric_unmeasurable(
+            result,
+            unmeasurable_metrics,
+            metric_name,
+            reason,
         )
 
     def _apply_swing_quality_sanity_guards(
@@ -1626,11 +1662,11 @@ class BiomechanicsOrchestrator:
                 unmeasurable_metrics.append(
                     UnmeasurableMetric(metric_name="pixel_calibration", reason=reason)
                 )
-                unmeasurable_metrics.append(
-                    UnmeasurableMetric(
-                        metric_name="bat_speed",
-                        reason=f"Pixel calibration failed: {str(e)}",
-                    )
+                self._mark_bat_metric_unmeasurable(
+                    result,
+                    unmeasurable_metrics,
+                    "bat_speed",
+                    f"Pixel calibration failed: {str(e)}",
                 )
 
         if pixel_to_meter is not None:
@@ -1657,72 +1693,84 @@ class BiomechanicsOrchestrator:
             return self._finalize_result(result, unmeasurable_metrics, start_time, timeout=True)
 
         if pixel_to_meter is not None:
-            try:
-                result.bat_speed = self._bat_speed_calculator.calculate_bat_speed(
-                    bat_trajectory,
-                    metric_impact_frame,
-                    pixel_to_meter,
-                    fps,
-                    barrel_speed_multiplier=self._bat_speed_multiplier(
+            if not self._has_observed_speed_support(bat_trajectory, impact_frame):
+                self._mark_bat_metric_unmeasurable(
+                    result,
+                    unmeasurable_metrics,
+                    "bat_speed",
+                    "Bat barrel was not observed near impact",
+                )
+            else:
+                try:
+                    observed_trajectory = self._observed_bat_trajectory(
                         bat_trajectory
-                    ),
-                )
-            except CalibrationError as e:
-                reason = self._classify_bat_speed_reason(str(e))
-                unmeasurable_metrics.append(
-                    UnmeasurableMetric(metric_name="bat_speed", reason=reason)
-                )
+                    )
+                    result.bat_speed = self._bat_speed_calculator.calculate_bat_speed(
+                        observed_trajectory,
+                        metric_impact_frame,
+                        pixel_to_meter,
+                        fps,
+                    )
+                except CalibrationError as e:
+                    reason = self._classify_bat_speed_reason(str(e))
+                    self._mark_bat_metric_unmeasurable(
+                        result,
+                        unmeasurable_metrics,
+                        "bat_speed",
+                        reason,
+                    )
 
         # Step 3: Attack Angle (2-frame window at impact)
         if self._is_timeout(start_time):
             return self._finalize_result(result, unmeasurable_metrics, start_time, timeout=True)
 
-        try:
-            result.attack_angle = self._normalize_reported_attack_angle(
-                self._impact_attack_angle_calculator.calculate_launch_angle(
-                    bat_trajectory, metric_impact_frame
+        if not self._has_observed_impact_pair(
+            bat_trajectory,
+            metric_impact_frame,
+        ):
+            self._mark_bat_metric_unmeasurable(
+                result,
+                unmeasurable_metrics,
+                "attack_angle",
+                "Bat barrel was not observed near impact",
+            )
+        else:
+            try:
+                observed_trajectory = self._observed_bat_trajectory(
+                    bat_trajectory
                 )
-            )
-            if result.attack_angle and not (0.0 <= result.attack_angle.angle_degrees <= 60.0):
-                best_angle = result.attack_angle
-                for offset in [1, 2, -1, 3, -2]:
-                    try:
-                        candidate = self._normalize_reported_attack_angle(
-                            self._impact_attack_angle_calculator.calculate_launch_angle(
-                                bat_trajectory, metric_impact_frame + offset
-                            )
-                        )
-                        if 0.0 <= candidate.angle_degrees <= 60.0:
-                            best_angle = candidate
-                            break
-                    except CalibrationError:
-                        continue
-                result.attack_angle = best_angle
-        except CalibrationError as e:
-            reason = self._classify_attack_angle_reason(str(e))
-            unmeasurable_metrics.append(
-                UnmeasurableMetric(metric_name="attack_angle", reason=reason)
-            )
+                result.attack_angle = (
+                    self._impact_attack_angle_calculator.calculate_launch_angle(
+                        observed_trajectory,
+                        metric_impact_frame,
+                    )
+                )
+            except CalibrationError as e:
+                reason = self._classify_attack_angle_reason(str(e))
+                self._mark_bat_metric_unmeasurable(
+                    result,
+                    unmeasurable_metrics,
+                    "attack_angle",
+                    reason,
+                )
 
         # Step 5: Kinematic Chain
         if self._is_timeout(start_time):
             return self._finalize_result(result, unmeasurable_metrics, start_time, timeout=True)
 
-        try:
-            phase_boundaries = {
-                "start_frame": swing_phases.get("start_frame", 0),
-                "end_frame": swing_phases.get("end_frame", 0),
-            }
-            result.kinematic_chain = self._kinematic_chain_analyzer.analyze_kinematic_chain(
-                pose_sequence, phase_boundaries, fps
+        # The legacy analyzer differentiates 2D joint flexion angles. Baseball
+        # kinematic sequence, however, is defined from longitudinal pelvis,
+        # thorax, upper-arm, and hand segment angular velocities. Those 3D
+        # quantities are not identifiable from this monocular pose stream.
+        unmeasurable_metrics.append(
+            UnmeasurableMetric(
+                metric_name="kinematic_chain",
+                reason=(
+                    "Validated 3D segment angular velocities are unavailable "
+                    "from monocular projected landmarks"
+                ),
             )
-        except CalibrationError:
-            unmeasurable_metrics.append(
-                UnmeasurableMetric(
-                    metric_name="kinematic_chain",
-                    reason="Insufficient joint tracking data",
-                )
-            )
+        )
 
         # Step 6: Rotation Analysis
         if self._is_timeout(start_time):

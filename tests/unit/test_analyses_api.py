@@ -804,6 +804,84 @@ class TestGetAnalysisReport:
             assert body["overlay_video_url"] == "https://s3.example.com/overlay.mp4"
             assert len(body["metric_evaluations"]) == 1
             assert body["metric_evaluations"][0]["metric_name"] == "bat_speed"
+            assert body["phase_source"] is None
+            assert body["phase_evidence"] == {}
+            assert body["biomechanics"]["unmeasurable_metrics"] == []
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.api.analyses.get_s3_client")
+    @patch("app.api.analyses.get_async_db")
+    def test_get_report_exposes_measurement_and_phase_provenance(
+        self,
+        mock_get_db,
+        mock_s3,
+        client,
+        mock_completed_analysis,
+        mock_analysis_result,
+        mock_video,
+    ):
+        """Stored abstentions and phase evidence remain visible to clients."""
+        mock_analysis_result.analysis_id = mock_completed_analysis.id
+        mock_analysis_result.biomechanics_data["unmeasurable_metrics"] = [
+            {
+                "metric_name": "impact_anchor",
+                "reason": "No detector-observed impact was available",
+            }
+        ]
+        mock_analysis_result.swing_phases_data = {
+            "phases": {"impact": [42, 42]},
+            "phase_durations_ms": {"impact": 0.0},
+            "phase_source": "observed_bat_contact_only",
+            "phase_evidence": {
+                "impact_method": "smoothed_peak_speed",
+                "observed_non_predicted_bat_lines": 4,
+                "missing_phases_after_fallback": ["load", "rotation"],
+            },
+        }
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_completed_analysis),
+                _mock_scalar_result(mock_analysis_result),
+                _mock_scalar_result(mock_video),
+                _mock_scalar_result(None),
+            ]
+        )
+
+        mock_s3_instance = MagicMock()
+        mock_s3_instance.generate_presigned_download_url.return_value = (
+            "https://s3.example.com/overlay.mp4"
+        )
+        mock_s3.return_value = mock_s3_instance
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.get(
+                f"/api/v1/analyses/{mock_completed_analysis.id}/report",
+                headers=_user_headers(mock_completed_analysis.user_id),
+            )
+
+            assert response.status_code == 200
+            body = response.json()
+            assert body["biomechanics"]["unmeasurable_metrics"] == [
+                {
+                    "metric_name": "impact_anchor",
+                    "reason": "No detector-observed impact was available",
+                }
+            ]
+            assert body["phase_source"] == "observed_bat_contact_only"
+            assert body["phase_evidence"] == {
+                "impact_method": "smoothed_peak_speed",
+                "observed_non_predicted_bat_lines": 4,
+                "missing_phases_after_fallback": ["load", "rotation"],
+            }
         finally:
             app.dependency_overrides.clear()
 

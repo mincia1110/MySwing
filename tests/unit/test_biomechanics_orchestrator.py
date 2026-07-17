@@ -13,7 +13,6 @@ from app.models.biomechanics import BiomechanicsResult
 from app.models.pose import Keypoint, PoseResult
 from app.pipeline.biomechanics_analyzer import (
     BIOMECHANICS_TIMEOUT_SECONDS,
-    WRIST_PROXY_BARREL_SPEED_MULTIPLIER,
     BiomechanicsOrchestrator,
 )
 
@@ -62,6 +61,7 @@ def _make_bat_detection(
     *,
     length_pixels: float = 100.0,
     is_predicted: bool = False,
+    coordinate_space: str = "pixel",
 ) -> BatDetectionResult:
     """Create a BatDetectionResult."""
     return BatDetectionResult(
@@ -72,6 +72,7 @@ def _make_bat_detection(
         length_pixels=length_pixels,
         confidence=0.9,
         is_predicted=is_predicted,
+        coordinate_space=coordinate_space,
     )
 
 
@@ -150,10 +151,18 @@ class TestBiomechanicsOrchestratorSuccess:
         assert result.bat_speed is not None
         assert result.attack_angle is not None
         assert result.attack_angle is not None
-        assert result.kinematic_chain is not None
+        assert result.kinematic_chain is None
         assert result.rotation is not None
         assert result.hand_path_efficiency is not None
-        assert result.unmeasurable_metrics == []
+        kinematic_chain_reasons = [
+            metric.reason
+            for metric in result.unmeasurable_metrics
+            if metric.metric_name == "kinematic_chain"
+        ]
+        assert kinematic_chain_reasons == [
+            "Validated 3D segment angular velocities are unavailable from "
+            "monocular projected landmarks"
+        ]
         assert result.timeout_occurred is False
 
     def test_swing_quality_sanity_guards_drop_unrealistic_partial_clip_metrics(self):
@@ -204,14 +213,8 @@ class TestBiomechanicsOrchestratorSuccess:
         assert result.processing_time_seconds > 0.0
         assert result.processing_time_seconds < BIOMECHANICS_TIMEOUT_SECONDS
 
-    def test_reported_attack_angle_uses_positive_magnitude(self):
-        """Report-facing attack angle is a positive bat-path magnitude.
-
-        The low-level impact-angle calculator remains signed for diagnostics,
-        but reference comparison expects attack_angle in the positive 5-25°
-        range. A one-frame wrist-estimated segment that slopes downward in
-        image coordinates should not be reported as a negative attack angle.
-        """
+    def test_reported_attack_angle_preserves_signed_value(self):
+        """Report-facing attack angle preserves downward bat-path direction."""
         orchestrator = BiomechanicsOrchestrator()
         pose_sequence = _make_pose_sequence(20)
         detections = []
@@ -237,10 +240,10 @@ class TestBiomechanicsOrchestratorSuccess:
         )
 
         assert result.attack_angle is not None
-        assert result.attack_angle.angle_degrees == pytest.approx(18.43, abs=0.1)
+        assert result.attack_angle.angle_degrees == pytest.approx(-18.43, abs=0.1)
 
-    def test_predicted_wrist_trajectory_uses_bat_length_scale_and_multiplier(self):
-        """Wrist-derived bat proxy uses bat length scale and barrel multiplier."""
+    def test_predicted_wrist_trajectory_abstains_from_bat_metrics(self):
+        """A fully predicted wrist proxy cannot produce authoritative bat metrics."""
         orchestrator = BiomechanicsOrchestrator()
         pose_sequence = _make_pose_sequence(20)
         detections = []
@@ -255,7 +258,7 @@ class TestBiomechanicsOrchestratorSuccess:
                     is_predicted=True,
                 )
             )
-        bat_trajectory = BatTrajectory(detections=detections)
+        bat_trajectory = BatTrajectory(detections=detections, tracking_accuracy=1.0)
 
         result = orchestrator.analyze(
             pose_sequence=pose_sequence,
@@ -267,10 +270,160 @@ class TestBiomechanicsOrchestratorSuccess:
             fps=30.0,
         )
 
+        assert result.bat_speed is None
+        assert result.attack_angle is None
+        for metric_name in ("bat_speed", "attack_angle"):
+            reasons = [
+                metric
+                for metric in result.unmeasurable_metrics
+                if metric.metric_name == metric_name
+            ]
+            assert len(reasons) == 1
+            assert reasons[0].reason == "Bat barrel was not observed near impact"
+
+    def test_three_observed_impact_window_detections_allow_bat_speed(self):
+        """Three observed lines in impact-10 through impact+2 support speed."""
+        orchestrator = BiomechanicsOrchestrator()
+        bat_trajectory = BatTrajectory(
+            detections=[
+                _make_bat_detection(8, 200.0, 300.0),
+                _make_bat_detection(10, 230.0, 295.0),
+                _make_bat_detection(12, 260.0, 290.0),
+            ]
+        )
+
+        result = orchestrator.analyze(
+            pose_sequence=_make_pose_sequence(20),
+            bat_trajectory=bat_trajectory,
+            user_height_cm=180.0,
+            bat_length_meters=0.84,
+            impact_frame=10,
+            swing_phases=_default_swing_phases(),
+            fps=60.0,
+        )
+
         assert result.bat_speed is not None
-        expected = 0.01 * (0.85 / 0.25) * 30.0 * 3.6
-        expected *= WRIST_PROXY_BARREL_SPEED_MULTIPLIER
-        assert result.bat_speed.speed_kmh == pytest.approx(expected, abs=0.1)
+        assert result.bat_speed.measurement_frame == 10
+
+    def test_normalized_and_pixel_bat_lines_produce_equivalent_metrics(self):
+        """Boundary conversion keeps pixel metrics and calibration equivalent."""
+        orchestrator = BiomechanicsOrchestrator()
+        pixel_detections = []
+        normalized_detections = []
+        for frame in range(8, 13):
+            offset = frame - 8
+            pixel_x = 200.0 + offset * 30.0
+            pixel_y = 300.0 + offset * 10.0
+            pixel_detections.append(
+                _make_bat_detection(
+                    frame,
+                    pixel_x,
+                    pixel_y,
+                    length_pixels=200.0,
+                )
+            )
+            normalized_detections.append(
+                _make_bat_detection(
+                    frame,
+                    pixel_x / 1000.0,
+                    pixel_y / 500.0,
+                    length_pixels=0.4,
+                    coordinate_space="normalized",
+                )
+            )
+
+        common_args = {
+            "pose_sequence": _make_pose_sequence(20),
+            "user_height_cm": 180.0,
+            "bat_length_meters": 0.84,
+            "impact_frame": 10,
+            "swing_phases": _default_swing_phases(),
+            "fps": 60.0,
+            "video_width": 1000,
+            "video_height": 500,
+        }
+        pixel_result = orchestrator.analyze(
+            bat_trajectory=BatTrajectory(detections=pixel_detections),
+            **common_args,
+        )
+        normalized_result = orchestrator.analyze(
+            bat_trajectory=BatTrajectory(detections=normalized_detections),
+            **common_args,
+        )
+
+        assert pixel_result.bat_speed is not None
+        assert normalized_result.bat_speed is not None
+        assert normalized_result.bat_speed.speed_kmh == pytest.approx(
+            pixel_result.bat_speed.speed_kmh
+        )
+        assert pixel_result.attack_angle is not None
+        assert normalized_result.attack_angle is not None
+        assert normalized_result.attack_angle.angle_degrees == pytest.approx(
+            pixel_result.attack_angle.angle_degrees
+        )
+
+    def test_predicted_higher_speed_pair_cannot_win_metric_frame_selection(self):
+        """Metric-frame selection ignores a faster pair made only from proxies."""
+        orchestrator = BiomechanicsOrchestrator()
+        bat_trajectory = BatTrajectory(
+            detections=[
+                _make_bat_detection(5, 100.0, 200.0),
+                _make_bat_detection(6, 110.0, 200.0),
+                _make_bat_detection(9, 200.0, 200.0, is_predicted=True),
+                _make_bat_detection(10, 300.0, 200.0, is_predicted=True),
+            ]
+        )
+
+        metric_frame = orchestrator._select_impact_metric_frame(
+            bat_trajectory,
+            impact_frame=10,
+            pixel_to_meter=0.001,
+            fps=30.0,
+        )
+
+        assert metric_frame == 6
+
+    def test_predicted_outlier_does_not_change_observed_bat_speed(self):
+        """Interpolated points never contribute to the measured displacement."""
+        orchestrator = BiomechanicsOrchestrator()
+        observed = [
+            _make_bat_detection(8, 100.0, 200.0),
+            _make_bat_detection(9, 110.0, 200.0),
+            _make_bat_detection(10, 120.0, 200.0),
+        ]
+        common_args = {
+            "pose_sequence": _make_pose_sequence(20),
+            "user_height_cm": 180.0,
+            "bat_length_meters": 0.84,
+            "impact_frame": 10,
+            "swing_phases": _default_swing_phases(),
+            "fps": 30.0,
+        }
+
+        observed_result = orchestrator.analyze(
+            bat_trajectory=BatTrajectory(detections=observed),
+            **common_args,
+        )
+        mixed_result = orchestrator.analyze(
+            bat_trajectory=BatTrajectory(
+                detections=[
+                    *observed,
+                    _make_bat_detection(
+                        11,
+                        1000.0,
+                        200.0,
+                        is_predicted=True,
+                    ),
+                ]
+            ),
+            **common_args,
+        )
+
+        assert observed_result.bat_speed is not None
+        assert mixed_result.bat_speed is not None
+        assert mixed_result.bat_speed.speed_kmh == pytest.approx(
+            observed_result.bat_speed.speed_kmh
+        )
 
 
 class TestBiomechanicsOrchestratorPartialFailure:
@@ -302,7 +455,42 @@ class TestBiomechanicsOrchestratorPartialFailure:
             m for m in result.unmeasurable_metrics if m.metric_name == "bat_speed"
         ]
         assert len(bat_speed_metrics) == 1
-        assert "Insufficient bat detections" in bat_speed_metrics[0].reason
+        assert "not observed near impact" in bat_speed_metrics[0].reason
+
+    def test_mixed_trajectory_with_insufficient_observed_support_abstains(self):
+        """Predicted fills do not satisfy either observed-support requirement."""
+        orchestrator = BiomechanicsOrchestrator()
+        bat_trajectory = BatTrajectory(
+            detections=[
+                _make_bat_detection(8, 100.0, 300.0, is_predicted=True),
+                _make_bat_detection(9, 130.0, 295.0),
+                _make_bat_detection(10, 300.0, 290.0, is_predicted=True),
+                _make_bat_detection(11, 330.0, 285.0),
+                _make_bat_detection(12, 500.0, 280.0, is_predicted=True),
+            ],
+            tracking_accuracy=1.0,
+        )
+
+        result = orchestrator.analyze(
+            pose_sequence=_make_pose_sequence(20),
+            bat_trajectory=bat_trajectory,
+            user_height_cm=180.0,
+            bat_length_meters=0.84,
+            impact_frame=10,
+            swing_phases=_default_swing_phases(),
+            fps=60.0,
+        )
+
+        assert result.bat_speed is None
+        assert result.attack_angle is None
+        for metric_name in ("bat_speed", "attack_angle"):
+            reasons = [
+                metric
+                for metric in result.unmeasurable_metrics
+                if metric.metric_name == metric_name
+            ]
+            assert len(reasons) == 1
+            assert "not observed near impact" in reasons[0].reason
 
     def test_no_bat_detection_at_impact_frame(self):
         """When no bat detection at impact frame, launch_angle should be unmeasurable."""
@@ -335,7 +523,7 @@ class TestBiomechanicsOrchestratorPartialFailure:
             m for m in result.unmeasurable_metrics if m.metric_name == "attack_angle"
         ]
         assert len(launch_metrics) == 1
-        assert "No bat detection at impact frame" in launch_metrics[0].reason
+        assert "not observed near impact" in launch_metrics[0].reason
 
 
 class TestCalibrationFailurePropagation:
@@ -430,7 +618,7 @@ class TestUnmeasurableMetricReasons:
             m for m in result.unmeasurable_metrics if m.metric_name == "attack_angle"
         ]
         assert len(launch_metrics) == 1
-        assert "No bat detection at impact frame" in launch_metrics[0].reason
+        assert "not observed near impact" in launch_metrics[0].reason
 
     def test_insufficient_joint_tracking_reason(self):
         """When joints can't be tracked, reason should indicate insufficient tracking data."""

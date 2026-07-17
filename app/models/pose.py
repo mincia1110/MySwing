@@ -19,7 +19,7 @@ class PoseResult:
     """Pose estimation result for a single person in a single frame."""
 
     frame_index: int
-    keypoints: list[Keypoint]  # 33 MediaPipe landmarks → 17+ essential keypoints
+    keypoints: list[Keypoint]  # Backend landmarks mapped to canonical keypoint names
     person_id: int
     is_primary_batter: bool
     overall_confidence: float

@@ -296,10 +296,11 @@ class TestEvaluateKinematicSequence:
             fps=30.0,
         )
 
-        sequence = result["principles_evaluation"]["kinematic_sequence"]
-        assert "reason" not in sequence
-        assert sequence["sequence_correct"] is True
-        assert sequence["max_gap_ms"] == 33.0
+        principles = result["principles_evaluation"]
+        assert principles["measurement_status"] == "unavailable"
+        assert "not validated" in principles["reason"]
+        assert result["evaluations"] == []
+        assert result["improvements"] == []
 
     def test_incorrect_sequence_order_fails(self):
         """Incorrect order (wrists before elbows) should fail."""

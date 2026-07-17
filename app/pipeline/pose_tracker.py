@@ -1,8 +1,9 @@
-"""Multi-frame pose tracking, interpolation, and confidence flagging module.
+"""Multi-frame pose tracking, conditioning, and confidence flagging module.
 
 This module provides a PoseTracker class that handles:
 - Tracking keypoint identity across consecutive frames (person_id maintenance)
 - Interpolating occluded keypoints from adjacent frame data
+- Conditioning observed keypoint trajectories for temporal stability
 - Flagging low-confidence frames when occlusion exceeds thresholds
 
 Requirements:
@@ -16,6 +17,8 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
+import numpy as np
+
 from app.models.pose import Keypoint, PoseResult
 
 logger = logging.getLogger(__name__)
@@ -24,14 +27,16 @@ logger = logging.getLogger(__name__)
 MAX_IDENTITY_GAP_FRAMES: int = 3
 MAX_INTERPOLATION_GAP_FRAMES: int = 5
 MAX_OCCLUSION_RATIO: float = 0.4
+DEFAULT_SMOOTHING_WINDOW: int = 5
+MIN_SMOOTHING_SAMPLES: int = 3
 
 
 class PoseTracker:
-    """Multi-frame pose tracker with interpolation and confidence flagging.
+    """Multi-frame pose tracker with interpolation and temporal conditioning.
 
     Tracks a person's identity across frames, interpolates missing keypoints
-    when occlusion is within acceptable bounds, and flags frames as
-    low-confidence when thresholds are exceeded.
+    when occlusion is within acceptable bounds, conditions existing keypoint
+    trajectories, and flags frames as low-confidence when thresholds are exceeded.
 
     Args:
         max_identity_gap: Maximum consecutive frames of tracking loss before
@@ -40,6 +45,10 @@ class PoseTracker:
             interpolation is applied. Defaults to 5.
         max_occlusion_ratio: Maximum ratio of occluded keypoints for
             interpolation to be applied. Defaults to 0.4.
+        enable_smoothing: Whether to apply offline temporal conditioning.
+            Defaults to False; enable only after dataset-specific validation.
+        smoothing_window: Odd number of samples in each local polynomial window.
+            Defaults to 5.
     """
 
     def __init__(
@@ -47,10 +56,17 @@ class PoseTracker:
         max_identity_gap: int = MAX_IDENTITY_GAP_FRAMES,
         max_interpolation_gap: int = MAX_INTERPOLATION_GAP_FRAMES,
         max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
+        enable_smoothing: bool = False,
+        smoothing_window: int = DEFAULT_SMOOTHING_WINDOW,
     ) -> None:
+        if smoothing_window < 1 or smoothing_window % 2 == 0:
+            raise ValueError("smoothing_window must be a positive odd integer")
+
         self.max_identity_gap = max_identity_gap
         self.max_interpolation_gap = max_interpolation_gap
         self.max_occlusion_ratio = max_occlusion_ratio
+        self.enable_smoothing = enable_smoothing
+        self.smoothing_window = smoothing_window
         self._next_person_id: int = 0
 
     def _generate_person_id(self) -> int:
@@ -73,7 +89,8 @@ class PoseTracker:
 
         Returns:
             List of PoseResult objects with consistent person_id assignments,
-            interpolated keypoints where applicable, and low-confidence flags set.
+            interpolated and conditioned keypoints where applicable, and
+            low-confidence flags set.
         """
         if not pose_results:
             return []
@@ -87,8 +104,11 @@ class PoseTracker:
         # Phase 2: Interpolate occluded keypoints
         interpolated_results = self._interpolate_occluded(tracked_results)
 
-        # Phase 3: Flag low-confidence frames
-        flagged_results = self._apply_low_confidence_flags(interpolated_results)
+        # Phase 3: Condition existing keypoint trajectories offline
+        conditioned_results = self._condition_temporally(interpolated_results)
+
+        # Phase 4: Flag low-confidence frames
+        flagged_results = self._apply_low_confidence_flags(conditioned_results)
 
         return flagged_results
 
@@ -157,7 +177,8 @@ class PoseTracker:
         For each frame, if keypoints are missing (occluded) and the occlusion
         is within acceptable bounds (≤ max_gap consecutive frames AND
         < max_occlusion_ratio of keypoints missing), linearly interpolate
-        from the nearest frames that have those keypoints.
+        between the nearest preceding and following frames that have those
+        keypoints.
 
         Args:
             pose_sequence: List of PoseResult objects with assigned person_ids.
@@ -335,23 +356,189 @@ class PoseTracker:
                             x=prev_kp.x + t * (next_kp.x - prev_kp.x),
                             y=prev_kp.y + t * (next_kp.y - prev_kp.y),
                             z=prev_kp.z + t * (next_kp.z - prev_kp.z),
-                            confidence=prev_kp.confidence
-                            + t * (next_kp.confidence - prev_kp.confidence),
+                            confidence=0.5
+                            * min(prev_kp.confidence, next_kp.confidence),
                             name=name,
                         )
                     )
-            elif prev_kp is not None:
-                # Only previous available: use last known position with reduced confidence
-                interpolated.append(
-                    replace(prev_kp, confidence=prev_kp.confidence * 0.5)
-                )
-            elif next_kp is not None:
-                # Only next available: use next position with reduced confidence
-                interpolated.append(
-                    replace(next_kp, confidence=next_kp.confidence * 0.5)
-                )
 
         return interpolated
+
+    def _condition_temporally(
+        self, pose_sequence: list[PoseResult]
+    ) -> list[PoseResult]:
+        """Condition existing keypoint trajectories within each identity.
+
+        Each target sample is estimated from a centered local polynomial fit in
+        actual frame time. Confidence weights and one robust residual-reweighting
+        step reduce the influence of isolated, low-confidence spatial outliers.
+        Missing keypoints are never created by this stage.
+        """
+        if not self.enable_smoothing or len(pose_sequence) < MIN_SMOOTHING_SAMPLES:
+            return list(pose_sequence)
+
+        series: dict[
+            tuple[int, str], list[tuple[int, int, int, Keypoint]]
+        ] = {}
+        for sequence_index, result in enumerate(pose_sequence):
+            for keypoint_index, keypoint in enumerate(result.keypoints):
+                series.setdefault((result.person_id, keypoint.name), []).append(
+                    (
+                        sequence_index,
+                        keypoint_index,
+                        result.frame_index,
+                        keypoint,
+                    )
+                )
+
+        conditioned_keypoints = [list(result.keypoints) for result in pose_sequence]
+        modified_results: set[int] = set()
+        half_window = self.smoothing_window // 2
+
+        for samples in series.values():
+            samples.sort(key=lambda sample: sample[2])
+            if len(samples) < MIN_SMOOTHING_SAMPLES:
+                continue
+
+            for target_index, sample in enumerate(samples):
+                sequence_index, keypoint_index, frame_index, keypoint = sample
+                start = max(0, target_index - half_window)
+                stop = min(len(samples), target_index + half_window + 1)
+                local_samples = samples[start:stop]
+
+                coordinates = self._local_polynomial_coordinates(
+                    local_samples, frame_index
+                )
+                if coordinates is None:
+                    continue
+
+                conditioned_keypoints[sequence_index][keypoint_index] = replace(
+                    keypoint,
+                    x=coordinates[0],
+                    y=coordinates[1],
+                    z=coordinates[2],
+                )
+                modified_results.add(sequence_index)
+
+        conditioned = list(pose_sequence)
+        for sequence_index in modified_results:
+            result = pose_sequence[sequence_index]
+            keypoints = conditioned_keypoints[sequence_index]
+            overall_confidence = (
+                sum(keypoint.confidence for keypoint in keypoints) / len(keypoints)
+            )
+            conditioned[sequence_index] = replace(
+                result,
+                keypoints=keypoints,
+                overall_confidence=overall_confidence,
+            )
+
+        return conditioned
+
+    def _local_polynomial_coordinates(
+        self,
+        samples: list[tuple[int, int, int, Keypoint]],
+        target_frame_index: int,
+    ) -> tuple[float, float, float] | None:
+        """Estimate one target coordinate with confidence-aware local regression."""
+        frame_indices = np.asarray(
+            [sample[2] for sample in samples], dtype=np.float64
+        )
+        coordinates = np.asarray(
+            [
+                (sample[3].x, sample[3].y, sample[3].z)
+                for sample in samples
+            ],
+            dtype=np.float64,
+        )
+        confidences = np.asarray(
+            [sample[3].confidence for sample in samples], dtype=np.float64
+        )
+
+        usable = (
+            np.isfinite(frame_indices)
+            & np.all(np.isfinite(coordinates), axis=1)
+            & np.isfinite(confidences)
+            & (confidences > 0.0)
+        )
+        if int(np.count_nonzero(usable)) < MIN_SMOOTHING_SAMPLES:
+            return None
+
+        frame_indices = frame_indices[usable]
+        coordinates = coordinates[usable]
+        confidences = confidences[usable]
+
+        relative_times = frame_indices - float(target_frame_index)
+        time_scale = max(float(np.max(np.abs(relative_times))), 1.0)
+        relative_times /= time_scale
+
+        base_weights = np.clip(confidences, 0.0, 1.0)
+        base_weights /= float(np.max(base_weights))
+
+        initial_fit = self._weighted_polynomial_fit(
+            relative_times, coordinates, base_weights, max_degree=2
+        )
+        if initial_fit is None:
+            return None
+
+        initial_prediction, fitted_coordinates, degree = initial_fit
+        residual_norms = np.linalg.norm(coordinates - fitted_coordinates, axis=1)
+        coordinate_scale = max(float(np.max(np.abs(coordinates))), 1.0)
+        numerical_floor = 100.0 * np.finfo(np.float64).eps * coordinate_scale
+
+        if float(np.max(residual_norms)) <= numerical_floor:
+            prediction = initial_prediction
+        else:
+            robust_scale = max(
+                1.4826 * float(np.median(residual_norms)), numerical_floor
+            )
+            cutoff = 1.345 * robust_scale
+            robust_weights = np.ones_like(residual_norms)
+            large_residuals = residual_norms > cutoff
+            robust_weights[large_residuals] = (
+                cutoff / residual_norms[large_residuals]
+            )
+
+            robust_fit = self._weighted_polynomial_fit(
+                relative_times,
+                coordinates,
+                base_weights * robust_weights,
+                max_degree=degree,
+            )
+            prediction = (
+                robust_fit[0] if robust_fit is not None else initial_prediction
+            )
+
+        return (float(prediction[0]), float(prediction[1]), float(prediction[2]))
+
+    @staticmethod
+    def _weighted_polynomial_fit(
+        relative_times: np.ndarray,
+        coordinates: np.ndarray,
+        weights: np.ndarray,
+        max_degree: int,
+    ) -> tuple[np.ndarray, np.ndarray, int] | None:
+        """Fit the highest supported weighted polynomial up to ``max_degree``."""
+        positive_weights = weights > 0.0
+        support = int(np.count_nonzero(positive_weights))
+
+        for degree in range(min(max_degree, support - 1), -1, -1):
+            design = np.vander(relative_times, N=degree + 1, increasing=True)
+            square_root_weights = np.sqrt(weights[positive_weights])[:, None]
+            weighted_design = design[positive_weights] * square_root_weights
+            weighted_coordinates = (
+                coordinates[positive_weights] * square_root_weights
+            )
+            coefficients, _, rank, _ = np.linalg.lstsq(
+                weighted_design, weighted_coordinates, rcond=None
+            )
+            if rank != degree + 1 or not np.all(np.isfinite(coefficients)):
+                continue
+
+            fitted_coordinates = design @ coefficients
+            return coefficients[0], fitted_coordinates, degree
+
+        return None
 
     def _apply_low_confidence_flags(
         self, pose_sequence: list[PoseResult]

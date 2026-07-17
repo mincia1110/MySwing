@@ -2,14 +2,14 @@
 
 English | [한국어](README.ko.md)
 
-MySwing is a file-upload based baseball swing analysis service optimized for short clips that contain exactly one baseball swing. The ideal input is about 5 seconds; the recommended range is 3-7 seconds, and videos longer than 10 seconds are rejected before expensive analysis starts. It uses computer vision with MediaPipe Pose and wrist/elbow-based bat estimation to detect body posture and bat motion, then generates biomechanics and baseball-theory driven analysis reports.
+MySwing is a file-upload based baseball swing analysis service optimized for short clips that contain exactly one baseball swing. The ideal input is about 5 seconds; the recommended range is 3-7 seconds, and videos longer than 10 seconds are rejected before expensive analysis starts. It uses computer vision with an accuracy-first RTMPose ONNX backend (and a configurable MediaPipe fallback) plus wrist/elbow-based bat estimation to detect body posture and bat motion, then generates biomechanics and baseball-theory driven analysis reports.
 
 > This project is currently designed for local development and validation with Docker Compose. Production deployments must configure storage, CORS, file visibility, authentication, and authorization policies separately.
 
 ## Features
 
 - **Single-swing video upload**: Direct S3-compatible upload with presigned URLs (mp4/mov/avi, up to 500 MB, hard maximum 10 seconds)
-- **Pose estimation**: MediaPipe Pose 33-landmark detection with multi-frame tracking and interpolation
+- **Pose estimation**: RTMPose-m ONNX inference with single-batter selection, multi-frame tracking, and interpolation; MediaPipe remains available for comparison/fallback
 - **Bat estimation**: Wrist/elbow keypoint-based bat head estimation through `WristBatEstimator`
 - **Swing classification**: Six phases: Stance -> Load -> Stride -> Rotation -> Impact -> Follow-through
 - **Biomechanics analysis**: Bat speed, attack angle, kinematic chain, rotation analysis, and hand path efficiency
@@ -33,7 +33,7 @@ Frontend -> FastAPI REST API -> Celery Worker
 |-------|------------|
 | Backend | FastAPI, Python 3.12, SQLAlchemy, Pydantic |
 | Task Queue | Celery + Redis |
-| CV/ML | MediaPipe Pose, OpenCV |
+| CV/ML | RTMPose/ONNX Runtime, MediaPipe Pose, OpenCV |
 | Video | ffmpeg (H.264 encoding) |
 | Storage | PostgreSQL, MinIO (S3-compatible) |
 | Frontend | React, TypeScript, Vite |
@@ -262,7 +262,8 @@ MySwing/
 ## Development Notes
 
 - `.env.example` contains local Docker Compose defaults.
-- Real video analysis requires `mediapipe`; include the `.[ml]` extra when installing the backend.
+- Real video analysis requires an ML backend; `.[ml]` installs both RTMPose/ONNX Runtime and MediaPipe, while `.[rtmpose]` installs only the default RTMPose runtime.
+- RTMPose model files are downloaded by `rtmlib` on first use and cached outside the repository. Set `MYSWING_POSE_BACKEND=mediapipe` to use the legacy comparison backend.
 - Bat trajectory currently uses wrist/elbow keypoint estimation rather than an object detection model.
 - Uploaded source and overlay videos are stored in S3-compatible storage. Local development uses MinIO.
 

@@ -17,12 +17,10 @@ import pytest
 from app.models.bat import BatDetectionResult, BatTrajectory
 from app.pipeline.biomechanics_analyzer import (
     ANGLE_PRECISION_DEGREES,
-    HITTING_ZONE_DURATION_MS,
     AttackAngleCalculator,
     CalibrationError,
     LaunchAngleCalculator,
 )
-
 
 # --- Helper functions ---
 

@@ -11,7 +11,7 @@ class BatSpeedResult:
     """Bat speed measurement at the impact zone (Requirement 6.3)."""
 
     speed_kmh: float
-    precision: float  # ±1 km/h
+    precision: float  # numeric reporting resolution, not measurement uncertainty
     measurement_frame: int
 
 
@@ -20,7 +20,7 @@ class ImpactAngleResult:
     """Impact attack-angle measurement at impact (2-frame window, Requirement 6.4)."""
 
     angle_degrees: float
-    precision: float  # ±0.5 degrees
+    precision: float  # numeric reporting resolution, not measurement uncertainty
     impact_frame: int
 
 
@@ -67,7 +67,7 @@ class AttackAngleResult:
     """Attack angle measurement through the hitting zone (Requirement 6.8)."""
 
     angle_degrees: float
-    precision: float  # ±0.5 degrees
+    precision: float  # numeric reporting resolution, not measurement uncertainty
     hitting_zone_start_frame: int
     hitting_zone_end_frame: int
 

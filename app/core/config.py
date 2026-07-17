@@ -1,5 +1,7 @@
 """Application configuration using pydantic-settings."""
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 
 
@@ -9,6 +11,12 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "MySwing"
     debug: bool = False
+
+    # Pose inference
+    pose_backend: Literal["mediapipe", "rtmpose"] = "rtmpose"
+    rtmpose_mode: Literal["lightweight", "balanced", "performance"] = "balanced"
+    rtmpose_inference_backend: str = "onnxruntime"
+    rtmpose_device: str = "cpu"
 
     # Database
     database_url: str = "postgresql://myswing:myswing@localhost:5432/myswing"

@@ -5,6 +5,8 @@ identification, duration calculation formula, correct phase ordering,
 and graceful handling of incomplete data.
 """
 
+import pytest
+
 from app.models.bat import BatDetectionResult, BatTrajectory
 from app.models.enums import SwingPhase
 from app.models.pose import Keypoint, PoseResult
@@ -48,6 +50,7 @@ def _make_pose(
 def _default_keypoints(
     left_hip_x: float = 0.4,
     right_hip_x: float = 0.6,
+    left_ankle_x: float = 0.4,
     left_ankle_y: float = 0.9,
     right_wrist_x: float = 0.55,
 ) -> list[Keypoint]:
@@ -64,7 +67,7 @@ def _default_keypoints(
         _make_keypoint("right_hip", x=right_hip_x, y=0.55),
         _make_keypoint("left_knee", x=0.4, y=0.7),
         _make_keypoint("right_knee", x=0.6, y=0.7),
-        _make_keypoint("left_ankle", x=0.4, y=left_ankle_y),
+        _make_keypoint("left_ankle", x=left_ankle_x, y=left_ankle_y),
         _make_keypoint("right_ankle", x=0.6, y=0.9),
         _make_keypoint("spine", x=0.5, y=0.3),
     ]
@@ -75,6 +78,8 @@ def _make_bat_detection(
     position: tuple[float, float] = (320.0, 240.0),
     detected: bool = True,
     confidence: float = 0.95,
+    is_predicted: bool = False,
+    coordinate_space: str = "pixel",
 ) -> BatDetectionResult:
     """Create a BatDetectionResult."""
     return BatDetectionResult(
@@ -84,7 +89,8 @@ def _make_bat_detection(
         orientation_angle=45.0,
         length_pixels=150.0,
         confidence=confidence,
-        is_predicted=False,
+        is_predicted=is_predicted,
+        coordinate_space=coordinate_space,
     )
 
 
@@ -196,6 +202,36 @@ class TestClassifyPhases:
         assert SwingPhase.IMPACT in result.phases
         assert SwingPhase.FOLLOW_THROUGH in result.phases
 
+    def test_predicted_wrist_proxy_cannot_create_contact_phases(self):
+        """Pose-derived proxy points are not evidence of impact or follow-through."""
+        pose_sequence, bat_trajectory, fps = _create_full_swing_sequence()
+        for detection in bat_trajectory.detections:
+            detection.is_predicted = True
+
+        result = SwingPhaseClassifier().classify_phases(
+            pose_sequence,
+            bat_trajectory,
+            fps,
+        )
+
+        assert SwingPhase.IMPACT not in result.phases
+        assert SwingPhase.FOLLOW_THROUGH not in result.phases
+
+    def test_mixed_proxy_speed_cannot_override_sparse_observed_lines(self):
+        """Three early observations cannot unlock a later predicted contact peak."""
+        pose_sequence, bat_trajectory, fps = _create_full_swing_sequence()
+        for detection in bat_trajectory.detections[3:]:
+            detection.is_predicted = True
+
+        result = SwingPhaseClassifier().classify_phases(
+            pose_sequence,
+            bat_trajectory,
+            fps,
+        )
+
+        assert SwingPhase.IMPACT not in result.phases
+        assert SwingPhase.FOLLOW_THROUGH not in result.phases
+
     def test_phases_are_in_correct_order(self):
         """Phase start frames should be in chronological order."""
         pose_sequence, bat_trajectory, fps = _create_full_swing_sequence()
@@ -252,8 +288,8 @@ class TestClassifyPhases:
         assert result.transitions == []
         assert result.phase_durations_ms == {}
 
-    def test_pipeline_fills_missing_core_phases_from_speed_fallback(self, monkeypatch):
-        """Pipeline wrapper should fill missing stride/rotation phases from bat speed."""
+    def test_pipeline_adds_only_observed_contact_to_partial_phases(self, monkeypatch):
+        """Observed bat speed may add contact but cannot invent body phases."""
         from app.models.swing import SwingPhaseResult, TransitionBoundary
         from app.tasks import pipeline
 
@@ -263,13 +299,9 @@ class TestClassifyPhases:
             phases={
                 SwingPhase.STANCE: (0, 2),
                 SwingPhase.LOAD: (2, 40),
-                SwingPhase.IMPACT: (40, 41),
-                SwingPhase.FOLLOW_THROUGH: (41, 59),
             },
             transitions=[
                 TransitionBoundary(SwingPhase.STANCE, SwingPhase.LOAD, 2, 0.8),
-                TransitionBoundary(SwingPhase.ROTATION, SwingPhase.IMPACT, 40, 0.85),
-                TransitionBoundary(SwingPhase.IMPACT, SwingPhase.FOLLOW_THROUGH, 41, 0.85),
             ],
         )
 
@@ -289,23 +321,25 @@ class TestClassifyPhases:
             fps,
         )
 
-        assert set(result["phases"]) == {
-            "stance",
-            "load",
-            "stride",
-            "rotation",
-            "impact",
+        assert set(result["phases"]) == {"stance", "load", "impact"}
+        assert result["phases"]["impact"][0] == result["phases"]["impact"][1]
+        assert "stride" not in result["phase_durations_ms"]
+        assert "rotation" not in result["phase_durations_ms"]
+        assert result["transitions"] == [
+            {
+                "from_phase": "stance",
+                "to_phase": "load",
+                "frame_index": 2,
+                "confidence": 0.8,
+            }
+        ]
+        assert result["phase_source"] == "mixed_pose_and_observed_bat_contact"
+        assert result["phase_evidence"]["impact_method"] == "smoothed_peak_speed"
+        assert result["phase_evidence"]["missing_phases_after_fallback"] == [
             "follow_through",
-        }
-        assert "stride" in result["phase_durations_ms"]
-        assert "rotation" in result["phase_durations_ms"]
-        transition_by_target = {
-            transition["to_phase"]: transition
-            for transition in result["transitions"]
-        }
-        for phase_name in ["load", "stride", "rotation", "impact", "follow_through"]:
-            transition_frame = transition_by_target[phase_name]["frame_index"]
-            assert transition_frame == result["phases"][phase_name][0]
+            "rotation",
+            "stride",
+        ]
 
     def test_speed_fallback_keeps_phase_ranges_monotonic_when_peak_is_early(self):
         """Speed fallback should not create inverted impact ranges for early peaks."""
@@ -461,6 +495,339 @@ class TestFindTransitionFrames:
             t for t in transitions if t.from_phase == SwingPhase.STANCE
         ]
         assert len(stance_to_load) >= 1
+
+    def test_impact_prefers_first_substantial_peak_before_follow_through_peak(self):
+        """A later, slightly larger wrist peak must not replace contact."""
+        classifier = SwingPhaseClassifier()
+        speeds = [0.0] * 50
+        # Contact-adjacent cluster centered at offset 20.
+        speeds[19:22] = [82.0, 90.0, 84.0]
+        # Follow-through cluster is slightly faster but later.
+        speeds[34:37] = [88.0, 100.0, 90.0]
+
+        impact = classifier._find_rotation_to_impact(
+            speeds,
+            start_frame=100,
+            stride_to_rotation=110,
+        )
+
+        assert impact == 120
+
+    def test_impact_is_unavailable_without_rotation_anchor(self):
+        """A pose-proxy speed peak alone must not be labeled as contact."""
+        classifier = SwingPhaseClassifier()
+
+        impact = classifier._find_rotation_to_impact(
+            [0.0, 2.0, 8.0, 3.0, 1.0],
+            start_frame=40,
+            stride_to_rotation=None,
+        )
+
+        assert impact is None
+
+    def test_follow_through_uses_selected_impact_peak_not_later_global_peak(self):
+        """Follow-through threshold is local to the chosen contact event."""
+        classifier = SwingPhaseClassifier()
+        speeds = [0.0] * 45
+        speeds[9:12] = [72.0, 90.0, 80.0]
+        speeds[12:15] = [55.0, 50.0, 45.0]
+        speeds[30:33] = [95.0, 110.0, 100.0]
+
+        follow = classifier._find_impact_to_follow_through(
+            speeds,
+            start_frame=200,
+            rotation_to_impact=210,
+        )
+
+        assert follow == 212
+
+    def test_follow_through_is_unavailable_without_impact_anchor(self):
+        """Post-contact phase cannot precede an unobserved contact event."""
+        classifier = SwingPhaseClassifier()
+
+        follow = classifier._find_impact_to_follow_through(
+            [0.0, 5.0, 2.0, 1.0],
+            start_frame=100,
+            rotation_to_impact=None,
+        )
+
+        assert follow is None
+
+    def test_follow_through_is_unavailable_without_sustained_deceleration(self):
+        """A fixed post-contact offset is not evidence of follow-through."""
+        classifier = SwingPhaseClassifier()
+        speeds = [0.0] * 20
+        speeds[8:11] = [80.0, 90.0, 85.0]
+        speeds[11:] = [75.0] * 9
+
+        follow = classifier._find_impact_to_follow_through(
+            speeds,
+            start_frame=100,
+            rotation_to_impact=109,
+        )
+
+        assert follow is None
+
+
+class TestValidityAwarePoseSignals:
+    """Test validity and coordinate scaling of pose-derived transitions."""
+
+    def test_missing_front_ankle_never_triggers_foot_plant(self):
+        """Unavailable ankle pairs must not look like a planted foot."""
+        pose_sequence = []
+        for frame_index in range(10):
+            keypoints = _default_keypoints(
+                right_hip_x=0.6 if frame_index == 0 else 0.65,
+                left_ankle_y=0.84 if frame_index == 3 else 0.9,
+            )
+            if frame_index >= 4:
+                keypoints = [kp for kp in keypoints if kp.name != "left_ankle"]
+            pose_sequence.append(_make_pose(frame_index, keypoints=keypoints))
+
+        transitions = SwingPhaseClassifier().find_transition_frames(
+            pose_sequence, BatTrajectory()
+        )
+
+        transition_targets = {transition.to_phase for transition in transitions}
+        assert SwingPhase.LOAD in transition_targets
+        assert SwingPhase.STRIDE in transition_targets
+        assert SwingPhase.ROTATION not in transition_targets
+
+    def test_pose_gaps_do_not_count_as_consecutive_foot_plant_samples(self):
+        """Adjacent list entries across dropped frames are not consecutive evidence."""
+        classifier = SwingPhaseClassifier()
+        pose_sequence = [
+            _make_pose(frame_index)
+            for frame_index in (0, 1, 2, 5, 6)
+        ]
+
+        transition = classifier._find_stride_to_rotation(
+            pose_sequence,
+            ankle_stable=[1.0, 1.0, 0.0, 0.0],
+            hip_rotation=[0.0, 0.0, 0.02, 0.02],
+            load_to_stride=1,
+        )
+
+        assert transition is None
+
+    def test_one_valid_stable_sample_is_insufficient_for_foot_plant(self):
+        """A single low-motion pair cannot confirm ankle stabilization."""
+        pose_sequence = [_make_pose(frame_index) for frame_index in range(9)]
+        ankle_stable = [0.02] * 8
+        ankle_stable[4] = 0.001
+        hip_rotation = [0.0] * 8
+        hip_rotation[4] = 0.02
+
+        transition = SwingPhaseClassifier()._find_stride_to_rotation(
+            pose_sequence,
+            ankle_stable,
+            hip_rotation,
+            load_to_stride=2,
+        )
+
+        assert transition is None
+
+    @pytest.mark.parametrize(
+        ("rotation_idx", "expected_frame"),
+        [
+            (3, 6),  # Immediately before the planted pair.
+            (4, 6),  # On the first stable sample.
+            (5, 6),  # On the second stable sample.
+            (6, 7),  # Immediately after the planted pair.
+        ],
+    )
+    def test_two_stable_samples_accept_adjacent_rotation(
+        self, rotation_idx, expected_frame
+    ):
+        """Rotation may coincide with or immediately border a stable pair."""
+        frame_indices = list(range(9))
+        pose_sequence = [_make_pose(index) for index in frame_indices]
+        ankle_stable = [0.02] * 8
+        ankle_stable[4:6] = [0.001, 0.002]
+        hip_rotation = [0.0] * 8
+        hip_rotation[rotation_idx] = 0.02
+
+        transition = SwingPhaseClassifier()._find_stride_to_rotation(
+            pose_sequence,
+            ankle_stable,
+            hip_rotation,
+            load_to_stride=2,
+        )
+
+        assert transition == expected_frame
+
+    def test_two_stable_samples_support_no_rotation_fallback_after_stride(self):
+        """Confirmed stability can fall back after a real stride and lead-in."""
+        frame_indices = list(range(9))
+        pose_sequence = [_make_pose(index) for index in frame_indices]
+        ankle_stable = [0.02] * 8
+        ankle_stable[4:6] = [0.001, 0.002]
+
+        classifier = SwingPhaseClassifier()
+        transition = classifier._find_stride_to_rotation(
+            pose_sequence,
+            ankle_stable,
+            [0.0] * 8,
+            load_to_stride=2,
+        )
+        without_stride = classifier._find_stride_to_rotation(
+            pose_sequence,
+            ankle_stable,
+            [0.0] * 8,
+            load_to_stride=None,
+        )
+
+        assert transition == 6
+        assert without_stride is None
+
+    def test_missing_hip_and_wrist_cues_do_not_create_load_transition(self):
+        """Missing movement cues remain unavailable rather than numeric motion."""
+        keypoints = [
+            kp
+            for kp in _default_keypoints()
+            if kp.name not in {"right_hip", "right_wrist"}
+        ]
+        pose_sequence = [
+            _make_pose(3, keypoints=keypoints),
+            _make_pose(17, keypoints=keypoints),
+        ]
+        classifier = SwingPhaseClassifier()
+
+        hip_movement = classifier._compute_hip_backward_signal(pose_sequence)
+        hand_movement = classifier._compute_hand_backward_signal(pose_sequence)
+
+        assert hip_movement == [None]
+        assert hand_movement == [None]
+        assert (
+            classifier._find_stance_to_load(
+                pose_sequence, hip_movement, hand_movement
+            )
+            is None
+        )
+
+    def test_portrait_and_landscape_use_same_height_normalized_motion(self):
+        """Equivalent pixel x motion produces the same signals and event."""
+        results = []
+        for width, height in [(200.0, 100.0), (50.0, 100.0)]:
+            normalized_dx = 2.0 / width
+            pose_sequence = [
+                _make_pose(
+                    11,
+                    keypoints=_default_keypoints(
+                        right_hip_x=0.6,
+                        right_wrist_x=0.55,
+                        left_ankle_x=0.4,
+                    ),
+                ),
+                _make_pose(
+                    12,
+                    keypoints=_default_keypoints(
+                        right_hip_x=0.6 + normalized_dx,
+                        right_wrist_x=0.55 + normalized_dx,
+                        left_ankle_x=0.4 + normalized_dx,
+                    ),
+                ),
+            ]
+            classifier = SwingPhaseClassifier(
+                video_width=width,
+                video_height=height,
+            )
+            hip_movement = classifier._compute_hip_backward_signal(pose_sequence)
+            hand_movement = classifier._compute_hand_backward_signal(pose_sequence)
+            ankle_movement = classifier._compute_ankle_stabilize_signal(
+                pose_sequence
+            )
+            hip_rotation = classifier._compute_hip_rotation_signal(pose_sequence)
+            transition = classifier._find_stance_to_load(
+                pose_sequence, hip_movement, hand_movement
+            )
+            results.append(
+                (
+                    hip_movement[0],
+                    hand_movement[0],
+                    ankle_movement[0],
+                    hip_rotation[0],
+                    transition,
+                )
+            )
+
+        assert results[0][:-1] == pytest.approx([0.02, 0.02, 0.02, 0.02])
+        assert results[1][:-1] == pytest.approx(results[0][:-1])
+        assert results[0][-1] == results[1][-1] == 12
+
+    def test_default_dimensions_preserve_square_normalized_behavior(self):
+        """The default 1x1 scale retains prior normalized x displacement."""
+        pose_sequence = [
+            _make_pose(101, keypoints=_default_keypoints(right_hip_x=0.6)),
+            _make_pose(102, keypoints=_default_keypoints(right_hip_x=0.61)),
+        ]
+        default_classifier = SwingPhaseClassifier()
+        square_classifier = SwingPhaseClassifier(
+            video_width=640.0,
+            video_height=640.0,
+        )
+
+        default_signal = default_classifier._compute_hip_backward_signal(
+            pose_sequence
+        )
+        square_signal = square_classifier._compute_hip_backward_signal(
+            pose_sequence
+        )
+
+        assert default_signal == pytest.approx([0.01])
+        assert square_signal == pytest.approx(default_signal)
+        assert (
+            default_classifier._find_stance_to_load(
+                pose_sequence, default_signal, [None]
+            )
+            == 102
+        )
+
+    def test_observed_normalized_bat_speed_is_aspect_invariant(self):
+        """Equivalent pixel barrel motion has the same peak in any aspect ratio."""
+        physical_points = [(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (40.0, 60.0)]
+        results = []
+        for width, height in ((200.0, 100.0), (50.0, 100.0)):
+            trajectory = BatTrajectory(
+                detections=[
+                    _make_bat_detection(
+                        frame_index,
+                        position=(x / width, y / height),
+                        coordinate_space="normalized",
+                    )
+                    for frame_index, (x, y) in enumerate(physical_points)
+                ]
+            )
+            classifier = SwingPhaseClassifier(
+                video_width=width,
+                video_height=height,
+            )
+            results.append(
+                classifier._get_observed_bat_speeds(
+                    trajectory,
+                    start_frame=0,
+                    end_frame=3,
+                )
+            )
+
+        assert results[0] == pytest.approx([0.0, 40.0, 30.0, 30.0])
+        assert results[1] == pytest.approx(results[0])
+
+    @pytest.mark.parametrize(
+        "dimensions",
+        [
+            {"video_width": 0.0},
+            {"video_width": -1.0},
+            {"video_width": float("nan")},
+            {"video_height": 0.0},
+            {"video_height": float("inf")},
+            {"video_height": None},
+        ],
+    )
+    def test_video_dimensions_must_be_positive_and_finite(self, dimensions):
+        """Invalid dimensions are rejected before deriving the aspect scale."""
+        with pytest.raises(ValueError, match="positive finite"):
+            SwingPhaseClassifier(**dimensions)
 
 
 class TestCalculatePhaseDurations:
