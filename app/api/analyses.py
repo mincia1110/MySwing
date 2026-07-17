@@ -9,15 +9,19 @@ Provides endpoints for:
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user_id
+from app.core.celery_app import (
+    ANALYSIS_STALE_GRACE_SECONDS,
+    ANALYSIS_TASK_HARD_TIME_LIMIT,
+)
 from app.db.models import (
     AnalysisResultTable,
     AnalysisTable,
@@ -49,6 +53,17 @@ from app.tasks.pipeline import analyze_swing_task
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analyses", tags=["analyses"])
+
+_RUNNING_ANALYSIS_STATUSES = (
+    "preprocessing",
+    "analyzing",
+    "evaluating",
+    "generating_report",
+)
+_STALE_ANALYSIS_ERROR_MESSAGE = (
+    "Analysis worker stopped before reporting a terminal status after the "
+    f"{ANALYSIS_TASK_HARD_TIME_LIMIT} second hard time limit."
+)
 
 
 def _quality_check_to_response(quality_check: Any) -> dict:
@@ -84,6 +99,62 @@ def _ensure_analysis_scope(analysis: AnalysisTable, current_user_id: UUID) -> No
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Analysis belongs to a different user.",
         )
+
+
+async def _reconcile_stale_analysis(
+    db: AsyncSession,
+    analysis: AnalysisTable,
+) -> AnalysisTable:
+    """Atomically fail a started analysis left running past the hard limit."""
+    if analysis.status not in _RUNNING_ANALYSIS_STATUSES or analysis.started_at is None:
+        return analysis
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(
+        seconds=ANALYSIS_TASK_HARD_TIME_LIMIT + ANALYSIS_STALE_GRACE_SECONDS
+    )
+    started_at = analysis.started_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    if started_at > cutoff:
+        return analysis
+
+    try:
+        update_result = await db.execute(
+            update(AnalysisTable)
+            .where(
+                AnalysisTable.id == analysis.id,
+                AnalysisTable.status.in_(_RUNNING_ANALYSIS_STATUSES),
+                AnalysisTable.started_at <= cutoff,
+            )
+            .values(
+                status="failed",
+                error_message=_STALE_ANALYSIS_ERROR_MESSAGE,
+                completed_at=now,
+            )
+            .returning(AnalysisTable)
+        )
+        reconciled = update_result.scalar_one_or_none()
+        if reconciled is not None:
+            await db.commit()
+            logger.warning(
+                "Reconciled stale analysis as failed: analysis_id=%s",
+                analysis.id,
+            )
+            return reconciled
+
+        # Another transaction changed the row after the initial read. End this
+        # snapshot and return the current database state instead of fabricating
+        # a failed response or overwriting a terminal transition.
+        await db.rollback()
+        current_result = await db.execute(
+            select(AnalysisTable).where(AnalysisTable.id == analysis.id)
+        )
+        current = current_result.scalar_one_or_none()
+        return current if current is not None else analysis
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @router.post(
@@ -236,6 +307,7 @@ async def get_analysis_status(
         )
 
     _ensure_analysis_scope(analysis, current_user_id)
+    analysis = await _reconcile_stale_analysis(db, analysis)
 
     return AnalysisStatusResponse(
         analysis_id=str(analysis.id),

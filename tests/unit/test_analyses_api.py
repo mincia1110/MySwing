@@ -14,13 +14,17 @@ Tests cover:
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.analyses import _quality_check_to_response
+from app.api.analyses import _quality_check_to_response, _reconcile_stale_analysis
+from app.core.celery_app import (
+    ANALYSIS_STALE_GRACE_SECONDS,
+    ANALYSIS_TASK_HARD_TIME_LIMIT,
+)
 from app.main import app
 
 
@@ -623,7 +627,7 @@ class TestGetAnalysisStatus:
     def test_get_status_analyzing(self, mock_get_db, client, mock_analysis):
         """Getting status of analyzing analysis returns correct status."""
         mock_analysis.status = "analyzing"
-        mock_analysis.started_at = datetime(2024, 1, 1, 0, 0, 5, tzinfo=timezone.utc)
+        mock_analysis.started_at = datetime.now(timezone.utc)
 
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(
@@ -652,6 +656,8 @@ class TestGetAnalysisStatus:
     def test_get_status_rejects_other_user(self, mock_get_db, client, mock_analysis):
         """Analysis id alone cannot expose another user's analysis."""
         other_user_id = uuid.uuid4()
+        mock_analysis.status = "analyzing"
+        mock_analysis.started_at = datetime.now(timezone.utc) - timedelta(hours=1)
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(
             return_value=_mock_scalar_result(mock_analysis)
@@ -669,6 +675,54 @@ class TestGetAnalysisStatus:
                 headers=_user_headers(other_user_id),
             )
             assert response.status_code == 403
+            mock_session.execute.assert_awaited_once()
+            mock_session.commit.assert_not_awaited()
+            mock_session.rollback.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_get_status_reconciles_stale_running_analysis(
+        self, client, mock_analysis
+    ):
+        """An authorized poll terminates a row stranded by a hard worker kill."""
+        mock_analysis.status = "analyzing"
+        mock_analysis.started_at = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        reconciled = MagicMock()
+        reconciled.id = mock_analysis.id
+        reconciled.user_id = mock_analysis.user_id
+        reconciled.status = "failed"
+        reconciled.error_message = "Analysis worker stopped after the hard time limit."
+        reconciled.started_at = mock_analysis.started_at
+        reconciled.completed_at = datetime.now(timezone.utc)
+        reconciled.created_at = mock_analysis.created_at
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(mock_analysis),
+                _mock_scalar_result(reconciled),
+            ]
+        )
+
+        async def override_get_db():
+            yield mock_session
+
+        from app.db.session import get_async_db
+        app.dependency_overrides[get_async_db] = override_get_db
+
+        try:
+            response = client.get(
+                f"/api/v1/analyses/{mock_analysis.id}/status",
+                headers=_user_headers(mock_analysis.user_id),
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["status"] == "failed"
+            assert body["completed_at"] is not None
+            assert "hard time limit" in body["error_message"]
+            mock_session.commit.assert_awaited_once()
+            mock_session.rollback.assert_not_awaited()
         finally:
             app.dependency_overrides.clear()
 
@@ -751,6 +805,100 @@ class TestGetAnalysisStatus:
             assert body["completed_at"] is not None
         finally:
             app.dependency_overrides.clear()
+
+
+class TestStaleAnalysisReconciliation:
+    """Unit tests for hard-timeout status recovery semantics."""
+
+    @staticmethod
+    def _stale_started_at() -> datetime:
+        timeout_seconds = (
+            ANALYSIS_TASK_HARD_TIME_LIMIT + ANALYSIS_STALE_GRACE_SECONDS
+        )
+        return datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds + 1)
+
+    @pytest.mark.asyncio
+    async def test_stale_running_analysis_is_failed_atomically(self, mock_analysis):
+        mock_analysis.status = "evaluating"
+        mock_analysis.started_at = self._stale_started_at()
+        reconciled = MagicMock(status="failed")
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = _mock_scalar_result(reconciled)
+
+        result = await _reconcile_stale_analysis(mock_session, mock_analysis)
+
+        assert result is reconciled
+        mock_session.execute.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+        mock_session.rollback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fresh_running_analysis_is_unchanged(self, mock_analysis):
+        mock_analysis.status = "analyzing"
+        mock_analysis.started_at = datetime.now(timezone.utc)
+        mock_session = AsyncMock()
+
+        result = await _reconcile_stale_analysis(mock_session, mock_analysis)
+
+        assert result is mock_analysis
+        mock_session.execute.assert_not_awaited()
+        mock_session.commit.assert_not_awaited()
+        mock_session.rollback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status_value", "has_started_at"),
+        [
+            ("pending", False),
+            ("completed", True),
+            ("failed", True),
+            ("analyzing", False),
+        ],
+    )
+    async def test_non_recoverable_states_are_unchanged(
+        self, mock_analysis, status_value, has_started_at
+    ):
+        mock_analysis.status = status_value
+        mock_analysis.started_at = self._stale_started_at() if has_started_at else None
+        mock_session = AsyncMock()
+
+        result = await _reconcile_stale_analysis(mock_session, mock_analysis)
+
+        assert result is mock_analysis
+        mock_session.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_conditional_update_miss_returns_current_terminal_state(
+        self, mock_analysis
+    ):
+        mock_analysis.status = "generating_report"
+        mock_analysis.started_at = self._stale_started_at()
+        current = MagicMock(status="completed")
+        mock_session = AsyncMock()
+        mock_session.execute.side_effect = [
+            _mock_scalar_result(None),
+            _mock_scalar_result(current),
+        ]
+
+        result = await _reconcile_stale_analysis(mock_session, mock_analysis)
+
+        assert result is current
+        assert mock_session.execute.await_count == 2
+        mock_session.rollback.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_persistence_failure_rolls_back_and_propagates(self, mock_analysis):
+        mock_analysis.status = "preprocessing"
+        mock_analysis.started_at = self._stale_started_at()
+        mock_session = AsyncMock()
+        mock_session.execute.side_effect = RuntimeError("database unavailable")
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await _reconcile_stale_analysis(mock_session, mock_analysis)
+
+        mock_session.rollback.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()
 
 
 class TestGetAnalysisReport:
@@ -1146,7 +1294,7 @@ class TestStatusTransitions:
         mock_analysis.user_id = uuid.uuid4()
         mock_analysis.status = status_value
         mock_analysis.error_message = "Error" if status_value == "failed" else None
-        mock_analysis.started_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        mock_analysis.started_at = datetime.now(timezone.utc)
         mock_analysis.completed_at = (
             datetime(2024, 1, 1, 0, 0, 30, tzinfo=timezone.utc)
             if status_value == "completed"

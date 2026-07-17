@@ -7,9 +7,10 @@ Verifies:
 - Worker settings (concurrency, prefetch, time limits)
 """
 
-import pytest
-
 from app.core.celery_app import (
+    ANALYSIS_STALE_GRACE_SECONDS,
+    ANALYSIS_TASK_HARD_TIME_LIMIT,
+    ANALYSIS_TASK_SOFT_TIME_LIMIT,
     DEFAULT_RETRY_POLICY,
     celery_app,
     task_queues,
@@ -156,8 +157,30 @@ class TestWorkerSettings:
         assert celery_app.conf.task_time_limit == 120
 
     def test_task_soft_time_limit_is_60(self):
-        """Soft time limit should be 60 seconds (matches Req 6.10 with buffer)."""
+        """App-wide soft time limit should default to 60 seconds."""
         assert celery_app.conf.task_soft_time_limit == 60
+
+    def test_orchestrator_overrides_global_time_limits(self):
+        """analyze_swing_task must keep its own limits above the app defaults.
+
+        The full CV pipeline legitimately needs minutes. The app-level defaults
+        (60s soft / 120s hard) would kill it mid-run with SIGKILL on the hard
+        limit, which bypasses the in-task SoftTimeLimitExceeded handler and
+        leaves the analysis row stuck in a non-terminal status that the
+        frontend polls forever.
+        """
+        from app.tasks.pipeline import analyze_swing_task
+
+        assert ANALYSIS_TASK_SOFT_TIME_LIMIT == 600
+        assert ANALYSIS_TASK_HARD_TIME_LIMIT == 720
+        assert ANALYSIS_STALE_GRACE_SECONDS > 0
+        assert analyze_swing_task.soft_time_limit == ANALYSIS_TASK_SOFT_TIME_LIMIT
+        assert analyze_swing_task.time_limit == ANALYSIS_TASK_HARD_TIME_LIMIT
+        assert (
+            analyze_swing_task.soft_time_limit
+            > celery_app.conf.task_soft_time_limit
+        )
+        assert analyze_swing_task.time_limit > celery_app.conf.task_time_limit
 
 
 class TestPipelineTasksRegistered:

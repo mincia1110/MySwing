@@ -4,11 +4,17 @@ Configures the Celery task queue with Redis as broker and backend,
 task routing, retry policies, and worker settings for the swing analysis pipeline.
 """
 
+from celery import Celery
 from kombu import Exchange, Queue
 
-from celery import Celery
-
 from app.core.config import settings
+
+# The full CV pipeline needs a longer budget than the app-wide task defaults.
+# The status API uses the hard limit plus this grace period to reconcile rows
+# left non-terminal when a worker process is killed before it can update them.
+ANALYSIS_TASK_SOFT_TIME_LIMIT = 600
+ANALYSIS_TASK_HARD_TIME_LIMIT = 720
+ANALYSIS_STALE_GRACE_SECONDS = 60
 
 # Define exchanges
 default_exchange = Exchange("default", type="direct")
@@ -57,9 +63,10 @@ celery_app.conf.update(
     # Worker settings
     worker_concurrency=2,  # CPU-bound CV tasks
     worker_prefetch_multiplier=1,  # One task at a time per worker for heavy tasks
-    # Time limits
+    # Time limits. These are app-level defaults; long-running tasks declare
+    # explicit overrides because the full CV pipeline needs minutes.
     task_time_limit=120,  # Hard limit: 120 seconds
-    task_soft_time_limit=60,  # Soft limit: 60 seconds (matches Req 6.10 with buffer)
+    task_soft_time_limit=60,  # Soft limit: 60 seconds
     # Retry policy defaults
     task_default_retry_delay=5,
     task_max_retries=2,

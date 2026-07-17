@@ -29,7 +29,12 @@ import numpy as np
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.time import get_exponential_backoff_interval
 
-from app.core.celery_app import DEFAULT_RETRY_POLICY, celery_app
+from app.core.celery_app import (
+    ANALYSIS_TASK_HARD_TIME_LIMIT,
+    ANALYSIS_TASK_SOFT_TIME_LIMIT,
+    DEFAULT_RETRY_POLICY,
+    celery_app,
+)
 from app.db.session import sync_session_factory
 
 logger = logging.getLogger(__name__)
@@ -474,8 +479,8 @@ def _load_frames_from_temp_dir(temp_dir: str) -> list[np.ndarray]:
     retry_backoff=DEFAULT_RETRY_POLICY["retry_backoff"],
     retry_backoff_max=DEFAULT_RETRY_POLICY["retry_backoff_max"],
     retry_jitter=DEFAULT_RETRY_POLICY["retry_jitter"],
-    soft_time_limit=600,
-    time_limit=720,
+    soft_time_limit=ANALYSIS_TASK_SOFT_TIME_LIMIT,
+    time_limit=ANALYSIS_TASK_HARD_TIME_LIMIT,
 )
 def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
     """Orchestrator task that coordinates the full analysis pipeline.
@@ -632,18 +637,24 @@ def analyze_swing_task(self, analysis_id: str) -> dict[str, Any]:
 
     except SoftTimeLimitExceeded:
         logger.error(
-            "Pipeline timed out for analysis_id=%s (soft limit 600s)", analysis_id
+            "Pipeline timed out for analysis_id=%s (soft limit %ss)",
+            analysis_id,
+            ANALYSIS_TASK_SOFT_TIME_LIMIT,
+        )
+        timeout_message = (
+            "Analysis timed out "
+            f"(exceeded {ANALYSIS_TASK_SOFT_TIME_LIMIT} second soft limit)"
         )
         _update_analysis_status(
             analysis_id,
             STATUS_FAILED,
-            error_message="Analysis timed out (exceeded 600 second soft limit)",
+            error_message=timeout_message,
             completed_at=datetime.now(timezone.utc),
         )
         return {
             "analysis_id": analysis_id,
             "status": STATUS_FAILED,
-            "error_message": "Analysis timed out (exceeded 600 second soft limit)",
+            "error_message": timeout_message,
         }
 
     except Exception as exc:
