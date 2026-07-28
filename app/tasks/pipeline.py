@@ -48,6 +48,22 @@ STATUS_GENERATING_REPORT = "generating_report"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 
+POSE_KEYPOINT_RETENTION_CONFIDENCE = 0.30
+POSE_FALLBACK_FRAME_COVERAGE = 0.50
+MIN_OBSERVED_BAT_SPEED_HEIGHT_RATIO = 0.004
+_CRITICAL_POSE_KEYPOINTS = {
+    "left_shoulder",
+    "right_shoulder",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+}
+
 
 def _update_analysis_status(
     analysis_id: str,
@@ -827,6 +843,105 @@ def _run_preprocessing(
         raise
 
 
+def _empty_pose_result(frame_index: int):
+    """Build an explicit missing-frame pose so temporal recovery can bridge it."""
+    from app.models.pose import PoseResult
+
+    return PoseResult(
+        frame_index=frame_index,
+        keypoints=[],
+        person_id=0,
+        is_primary_batter=True,
+        overall_confidence=0.0,
+        is_low_confidence=True,
+    )
+
+
+def _pose_quality_summary(pose_results: list, frame_count: int) -> dict[str, Any]:
+    """Summarize usable frame and critical-joint coverage for backend selection."""
+    denominator = max(frame_count, 1)
+    frames_with_pose = sum(bool(result.keypoints) for result in pose_results)
+    critical_samples = 0
+    total_keypoints = 0
+    for result in pose_results:
+        reliable_names = {
+            keypoint.name
+            for keypoint in result.keypoints
+            if keypoint.confidence >= POSE_KEYPOINT_RETENTION_CONFIDENCE
+        }
+        critical_samples += len(_CRITICAL_POSE_KEYPOINTS & reliable_names)
+        total_keypoints += len(result.keypoints)
+
+    critical_denominator = denominator * len(_CRITICAL_POSE_KEYPOINTS)
+    frame_coverage = frames_with_pose / denominator
+    critical_coverage = critical_samples / max(critical_denominator, 1)
+    return {
+        "input_frame_count": frame_count,
+        "frames_with_pose": frames_with_pose,
+        "frame_coverage": round(frame_coverage, 6),
+        "critical_joint_coverage": round(critical_coverage, 6),
+        "mean_keypoint_count": round(total_keypoints / denominator, 4),
+        "quality_score": round(0.65 * frame_coverage + 0.35 * critical_coverage, 6),
+    }
+
+
+def _infer_pose_backend(
+    frames: list[np.ndarray],
+    backend: str,
+) -> tuple[list, dict[str, Any]]:
+    """Run one backend without letting an isolated frame discard the sequence."""
+    from app.pipeline.pose_backend import create_pose_estimator
+
+    estimator = None
+    failures = 0
+    results = []
+    available = False
+    try:
+        estimator = create_pose_estimator(
+            min_confidence=POSE_KEYPOINT_RETENTION_CONFIDENCE,
+            backend=backend,
+        )
+        available = bool(estimator.is_available)
+        if not available:
+            return [], {
+                "backend": backend,
+                "available": False,
+                "inference_failure_count": len(frames),
+            }
+
+        for frame_index, frame in enumerate(frames):
+            try:
+                results.append(
+                    estimator.process_frame(frame, frame_index=frame_index)
+                )
+            except Exception:
+                failures += 1
+                logger.warning(
+                    "Pose backend %s failed on frame %d; retaining sequence",
+                    backend,
+                    frame_index,
+                    exc_info=True,
+                )
+                results.append(_empty_pose_result(frame_index))
+    except Exception:
+        failures = len(frames)
+        logger.warning(
+            "Pose backend %s could not be initialized or executed",
+            backend,
+            exc_info=True,
+        )
+        results = []
+    finally:
+        if estimator is not None:
+            estimator.close()
+
+    return results, {
+        "backend": backend,
+        "available": available,
+        "inference_failure_count": failures,
+    }
+
+
 def _run_pose_estimation(
     analysis_id: str, preprocessing_result: dict
 ) -> dict[str, Any]:
@@ -847,7 +962,6 @@ def _run_pose_estimation(
     try:
         from app.core.config import settings
         from app.pipeline.batter_identifier import BatterIdentifier
-        from app.pipeline.pose_backend import create_pose_estimator
         from app.pipeline.pose_tracker import PoseTracker
 
         frames_dir = preprocessing_result.get("frames_dir")
@@ -866,30 +980,54 @@ def _run_pose_estimation(
                 "status": "completed",
             }
 
-        estimator = create_pose_estimator(min_confidence=0.5)
+        primary_backend = settings.pose_backend
+        pose_results, primary_attempt = _infer_pose_backend(
+            frames,
+            primary_backend,
+        )
+        attempts = [primary_attempt]
+        selected_backend = primary_backend
+        selected_quality = _pose_quality_summary(pose_results, len(frames))
 
-        try:
-            # Process each frame
-            pose_results = []
-            for i, frame in enumerate(frames):
-                if estimator.is_available:
-                    pose = estimator.process_frame(frame, frame_index=i)
-                    pose_results.append(pose)
-        finally:
-            estimator.close()
+        # RTMPose and MediaPipe have different failure modes.  Only pay the
+        # second inference cost when the configured backend misses most frames.
+        if selected_quality["frame_coverage"] < POSE_FALLBACK_FRAME_COVERAGE:
+            fallback_backend = (
+                "mediapipe" if primary_backend == "rtmpose" else "rtmpose"
+            )
+            fallback_results, fallback_attempt = _infer_pose_backend(
+                frames,
+                fallback_backend,
+            )
+            attempts.append(fallback_attempt)
+            fallback_quality = _pose_quality_summary(
+                fallback_results,
+                len(frames),
+            )
+            if fallback_quality["quality_score"] > selected_quality["quality_score"]:
+                pose_results = fallback_results
+                selected_backend = fallback_backend
+                selected_quality = fallback_quality
 
-        if not pose_results:
+        if not pose_results or not any(result.keypoints for result in pose_results):
             return {
                 "analysis_id": analysis_id,
                 "pose_sequence": [],
-                "status": "completed",
+                "pose_backend": selected_backend,
+                "pose_backend_attempts": attempts,
+                "pose_quality": selected_quality,
+                "status": "partial_failure",
+                "error": "No body pose could be detected in the video frames.",
             }
 
         # Apply PoseTracker for multi-frame tracking + interpolation
         # Robust local-polynomial conditioning remains available as an
         # experiment, but increased segment-length variation on 5/6 local
         # candidate pairs and removed the only directly correct contact event.
-        tracker = PoseTracker(enable_smoothing=False)
+        tracker = PoseTracker(
+            enable_smoothing=False,
+            recover_low_confidence=True,
+        )
         tracked_results = tracker.track_across_frames(pose_results)
 
         # Filter out frames with no keypoints (can't analyze empty frames)
@@ -899,7 +1037,11 @@ def _run_pose_estimation(
             return {
                 "analysis_id": analysis_id,
                 "pose_sequence": [],
-                "status": "completed",
+                "pose_backend": selected_backend,
+                "pose_backend_attempts": attempts,
+                "pose_quality": selected_quality,
+                "status": "partial_failure",
+                "error": "Body pose tracking produced no usable frames.",
             }
 
         # Apply BatterIdentifier if multiple persons detected
@@ -920,11 +1062,22 @@ def _run_pose_estimation(
 
         # Serialize for inter-step transport
         serialized = _serialize_dataclass(tracked_results)
+        tracked_quality = _pose_quality_summary(tracked_results, len(frames))
+        tracked_quality["recovered_frame_count"] = max(
+            0,
+            tracked_quality["frames_with_pose"]
+            - selected_quality["frames_with_pose"],
+        )
+        tracked_quality["retained_keypoint_confidence"] = (
+            POSE_KEYPOINT_RETENTION_CONFIDENCE
+        )
 
         return {
             "analysis_id": analysis_id,
             "pose_sequence": serialized,
-            "pose_backend": settings.pose_backend,
+            "pose_backend": selected_backend,
+            "pose_backend_attempts": attempts,
+            "pose_quality": tracked_quality,
             "status": "completed",
         }
 
@@ -1244,11 +1397,21 @@ def _estimate_impact_frame_from_bat_speed(
         win = raw_speeds[max(0, i - 1): min(len(raw_speeds), i + 2)]
         smoothed.append(statistics.median(win))
 
+    # Sparse, nearly stationary setup lines can otherwise become the largest
+    # *relative* peak and masquerade as contact. Require a small absolute motion
+    # floor in frame-height-normalized pixel geometry before trusting bat lines.
+    minimum_contact_speed = max(
+        1.5,
+        float(video_height) * MIN_OBSERVED_BAT_SPEED_HEIGHT_RATIO,
+    )
+    if max(smoothed, default=0.0) < minimum_contact_speed:
+        return 0, 0.0, "insufficient_observed_motion"
+
     peak_indices = []
     for i, v in enumerate(smoothed):
         left = smoothed[i - 1] if i > 0 else float("-inf")
         right = smoothed[i + 1] if i + 1 < len(smoothed) else float("-inf")
-        if v >= left and v >= right and v > 0:
+        if v >= left and v >= right and v >= minimum_contact_speed:
             peak_indices.append(i)
 
     if not peak_indices:
@@ -1457,8 +1620,9 @@ def _run_swing_classification(
         serialized = _serialize_dataclass(phase_result)
 
         # Preserve pose-derived phases exactly as observed. If contact alone is
-        # missing, an observed-line speed estimate may add a one-frame impact
-        # anchor, but it must not fabricate stance/load/stride/rotation windows.
+        # missing, add at most a one-frame anchor from either detector-observed
+        # bat motion or a separately-labelled, confidence-gated body-motion
+        # estimate. Neither path fabricates the other body-phase windows.
         phases_dict = serialized.get("phases", {})
         expected_phases = {
             "stance",
@@ -1510,19 +1674,75 @@ def _run_swing_classification(
                         "impact_method": impact_method,
                         "impact_confidence": impact_confidence,
                         "impact_frame": impact_frame,
+                        "impact_support": "detector_observed_bat",
+                        "supports_bat_metrics": True,
                     }
                 )
                 logger.info(
                     "Added observed-line impact anchor for analysis_id=%s",
                     analysis_id,
                 )
-        elif "impact" not in phases_dict:
-            logger.info(
-                "Skipped impact fallback for analysis_id=%s: only %d "
-                "observed bat detections",
-                analysis_id,
-                observed_bat_detections,
+
+        # A tracked hand-speed burst is useful for contact-relative *body*
+        # measurements even when the barrel line itself is not observable. Keep
+        # that provenance explicit so bat speed/angle guards continue to abstain.
+        if "impact" not in serialized.get("phases", {}):
+            from app.pipeline.pose_motion import estimate_impact_from_pose_motion
+
+            earliest_frame = None
+            rotation_range = phases_dict.get("rotation")
+            if (
+                isinstance(rotation_range, (list, tuple))
+                and len(rotation_range) >= 1
+            ):
+                earliest_frame = int(rotation_range[0])
+
+            pose_impact = estimate_impact_from_pose_motion(
+                pose_sequence,
+                batting_direction=batting_direction,
+                video_width=video_width,
+                video_height=video_height,
+                fps=fps,
+                earliest_frame=earliest_frame,
             )
+            if pose_impact is not None:
+                phases_dict = dict(serialized.get("phases", {}))
+                phases_dict["impact"] = [
+                    pose_impact.frame_index,
+                    pose_impact.frame_index,
+                ]
+                durations_dict = dict(serialized.get("phase_durations_ms", {}))
+                durations_dict["impact"] = 0.0
+                serialized["phases"] = phases_dict
+                serialized["phase_durations_ms"] = durations_dict
+                phase_source = (
+                    "mixed_pose_classifier_and_pose_motion_contact"
+                    if len(phases_dict) > 1
+                    else "pose_motion_contact_only"
+                )
+                phase_evidence.update(
+                    {
+                        "impact_method": pose_impact.method,
+                        "impact_confidence": pose_impact.confidence,
+                        "impact_frame": pose_impact.frame_index,
+                        "impact_support": "tracked_body_motion",
+                        "supports_bat_metrics": False,
+                        "pose_motion": pose_impact.evidence,
+                    }
+                )
+                logger.info(
+                    "Added pose-motion impact anchor for analysis_id=%s "
+                    "(confidence=%.3f)",
+                    analysis_id,
+                    pose_impact.confidence,
+                )
+            else:
+                logger.info(
+                    "Skipped impact fallback for analysis_id=%s: %d observed "
+                    "bat lines and insufficient pose-motion evidence",
+                    analysis_id,
+                    observed_bat_detections,
+                )
 
         # Recompute the missing set after an optional contact-only addition.
         final_phases = serialized.get("phases", {})
@@ -1732,7 +1952,7 @@ def _run_biomechanics_analysis(
             return serialized
 
         # Build swing_phases dict for orchestrator
-        swing_phases_dict = {}
+        swing_phases_dict = {"impact_frame": int(impact_frame)}
         rotation_phase = phases.get("rotation", phases.get("ROTATION"))
         if isinstance(rotation_phase, (list, tuple)) and len(rotation_phase) >= 2:
             swing_phases_dict["rotation_start_frame"] = int(rotation_phase[0])

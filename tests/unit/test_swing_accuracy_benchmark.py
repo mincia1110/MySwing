@@ -63,7 +63,7 @@ def _incomplete_phase_metrics() -> dict:
 
 
 def _bat_trajectory(observed_count: int) -> SimpleNamespace:
-    positions = (0.0, 0.01, 0.02, 0.03, 0.04, 0.10, 0.50, 0.60, 0.65, 0.67)
+    positions = (0.0, 2.0, 4.0, 6.0, 8.0, 20.0, 100.0, 120.0, 130.0, 134.0)
     detections = [
         SimpleNamespace(
             frame_index=frame_index,
@@ -352,7 +352,7 @@ def test_rtmpose_candidate_uses_onnx_cpu_estimator() -> None:
     )
 
     assert captured == {
-        "min_confidence": 0.5,
+        "min_confidence": 0.3,
         "mode": "balanced",
         "inference_backend": "onnxruntime",
         "device": "cpu",

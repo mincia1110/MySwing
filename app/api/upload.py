@@ -1,7 +1,11 @@
 """Upload API endpoints for presigned URL generation."""
 
-from fastapi import APIRouter, HTTPException, status
+from pathlib import PurePosixPath
+from uuid import UUID
 
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.api.dependencies import get_current_user_id
 from app.schemas.video import PresignedUrlRequest, PresignedUrlResponse
 from app.services.s3_client import get_s3_client
 
@@ -11,6 +15,11 @@ ALLOWED_VIDEO_CONTENT_TYPES = {
     "video/mp4",
     "video/quicktime",
     "video/x-msvideo",
+}
+CONTENT_TYPE_EXTENSIONS = {
+    "video/mp4": {".mp4"},
+    "video/quicktime": {".mov"},
+    "video/x-msvideo": {".avi"},
 }
 
 
@@ -23,6 +32,7 @@ ALLOWED_VIDEO_CONTENT_TYPES = {
 )
 async def create_presigned_upload_url(
     request: PresignedUrlRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
 ) -> PresignedUrlResponse:
     """Generate a presigned URL for uploading a video file to S3.
 
@@ -36,8 +46,25 @@ async def create_presigned_upload_url(
             f"Supported types: {', '.join(sorted(ALLOWED_VIDEO_CONTENT_TYPES))}",
         )
 
+    normalized_name = request.file_name.replace("\\", "/")
+    extension = PurePosixPath(normalized_name).suffix.lower()
+    if extension not in CONTENT_TYPE_EXTENSIONS[request.content_type]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File extension does not match the declared video content type.",
+        )
+
     s3_client = get_s3_client()
-    file_key = s3_client.generate_file_key(request.file_name)
+    try:
+        file_key = s3_client.generate_file_key(
+            request.file_name,
+            owner_id=current_user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     expires_in = 3600
 
     upload_url = s3_client.generate_presigned_upload_url(

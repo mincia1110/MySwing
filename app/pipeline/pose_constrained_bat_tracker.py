@@ -58,6 +58,12 @@ class PoseConstrainedBatTracker:
         "mouth_left",
         "mouth_right",
     }
+    _LOWER_BODY_CONNECTIONS = (
+        ("left_hip", "left_knee"),
+        ("left_knee", "left_ankle"),
+        ("right_hip", "right_knee"),
+        ("right_knee", "right_ankle"),
+    )
 
     def __init__(
         self,
@@ -142,14 +148,18 @@ class PoseConstrainedBatTracker:
             previous is not None and current is not None
             for previous, current in zip(selected, selected[1:])
         )
+        has_dense_observation_burst = self._has_dense_observation_burst(
+            selected,
+            fps=fps,
+        )
 
         # A single-frame unit clip can be accepted with one strong observation.
         enough_line_signal = (
             line_detection_count >= 1
             if len(frames) == 1
-            else line_detection_count >= 2
-            and line_coverage >= 0.30
+            else line_detection_count >= 3
             and has_temporal_pair
+            and has_dense_observation_burst
         )
         if not enough_line_signal:
             if wrist_prior is not None:
@@ -173,6 +183,41 @@ class PoseConstrainedBatTracker:
         trajectory = self._build_trajectory(detections)
         trajectory.tracking_accuracy = line_coverage
         return trajectory
+
+    @staticmethod
+    def _has_dense_observation_burst(
+        selected: list[BatLineCandidate | None],
+        *,
+        fps: float,
+    ) -> bool:
+        """Require three observations in a contact-sized temporal window.
+
+        The previous 30% whole-clip coverage gate discarded valid impact bursts
+        in otherwise idle setup/follow-through footage.  A bat is commonly
+        blurred or occluded outside the hitting zone; local temporal density is
+        the relevant evidence for contact, not coverage of the entire upload.
+        """
+        observed = [
+            index for index, candidate in enumerate(selected) if candidate is not None
+        ]
+        if len(observed) < 3:
+            return False
+
+        max_observation_step = max(
+            2,
+            int(round(max(float(fps), 1.0) * 0.067)),
+        )
+        for first, second, third in zip(
+            observed,
+            observed[1:],
+            observed[2:],
+        ):
+            if (
+                second - first <= max_observation_step
+                and third - second <= max_observation_step
+            ):
+                return True
+        return False
 
     def _candidates_for_frame(
         self,
@@ -366,6 +411,13 @@ class PoseConstrainedBatTracker:
             4.0,
             min(expected_length_px * 0.16, body_scale_px * 0.18),
         )
+        if self._segment_targets_lower_body(
+            hand_side,
+            head_px,
+            pose_points,
+            max(body_padding_px * 1.35, body_scale_px * 0.20),
+        ):
+            return None
         if not self._segment_leaves_athlete_region(
             hand_side,
             head_px,
@@ -664,6 +716,48 @@ class PoseConstrainedBatTracker:
             and sum(outside_samples) >= minimum_outside
             and sum(outside_samples[-4:]) >= 3
         )
+
+    def _segment_targets_lower_body(
+        self,
+        hand_side_px: tuple[float, float],
+        head_px: tuple[float, float],
+        points: dict[str, tuple[float, float]],
+        padding_px: float,
+    ) -> bool:
+        """Reject body edges that run from the hands into a leg or foot."""
+        lower_names = {
+            name for connection in self._LOWER_BODY_CONNECTIONS for name in connection
+        }
+        if any(
+            name in points and self._distance(head_px, points[name]) <= padding_px
+            for name in lower_names
+        ):
+            return True
+
+        distal_samples = [
+            (
+                hand_side_px[0]
+                + (head_px[0] - hand_side_px[0]) * float(position),
+                hand_side_px[1]
+                + (head_px[1] - hand_side_px[1]) * float(position),
+            )
+            for position in np.linspace(0.55, 1.0, 6)
+        ]
+        near_lower_body = 0
+        for sample in distal_samples:
+            if any(
+                start in points
+                and end in points
+                and self._distance_to_segment(
+                    sample,
+                    points[start],
+                    points[end],
+                )
+                <= padding_px
+                for start, end in self._LOWER_BODY_CONNECTIONS
+            ):
+                near_lower_body += 1
+        return near_lower_body >= 2
 
     def _point_in_athlete_region(
         self,

@@ -28,8 +28,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/videos", tags=["videos"])
 
 
-def _validate_upload_file_key(file_key: str) -> None:
-    """Reject object keys outside the upload namespace or with traversal."""
+def _validate_upload_file_key(
+    file_key: str,
+    expected_owner_id: UUID | None = None,
+) -> None:
+    """Reject unsafe upload keys and cross-user owner namespaces."""
     path = PurePosixPath(file_key)
     parts = path.parts
     if (
@@ -44,6 +47,19 @@ def _validate_upload_file_key(file_key: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid upload file_key.",
         )
+    if len(parts) >= 4:
+        try:
+            key_owner_id = UUID(parts[1])
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid owner namespace in upload file_key.",
+            ) from exc
+        if expected_owner_id is not None and key_owner_id != expected_owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Upload file_key belongs to a different user.",
+            )
 
 
 @router.post(
@@ -69,7 +85,7 @@ async def get_video_metadata(
 
     Must respond within 5 seconds per Requirement 1.7.
     """
-    _validate_upload_file_key(file_key)
+    _validate_upload_file_key(file_key, current_user_id)
     s3_client = get_s3_client()
 
     # Verify the file exists and is within the server-side size limit before

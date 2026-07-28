@@ -18,7 +18,10 @@ def create_pose_estimator(
 
         return PoseEstimator(
             min_confidence=min_confidence,
-            static_image_mode=True,
+            # Production passes consecutive normalized video frames. Enabling
+            # MediaPipe's temporal tracker materially reduces one-frame misses
+            # when this backend is used as the RTMPose fallback.
+            static_image_mode=False,
             model_complexity=1,
         )
     if selected == "rtmpose":

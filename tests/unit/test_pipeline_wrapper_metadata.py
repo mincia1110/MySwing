@@ -136,8 +136,8 @@ def test_classify_swing_task_uses_video_fps(mock_get_data, mock_run_swing_classi
     assert mock_run_swing_classification.call_args.kwargs["video_height"] == 1920
 
 
-def test_pose_estimation_uses_static_full_without_conditioning(monkeypatch):
-    """Production pose inference should use the selected benchmark candidate."""
+def test_pose_estimation_retains_weak_landmarks_for_temporal_recovery(monkeypatch):
+    """Production keeps weak landmarks until the temporal recovery stage."""
     captured_estimator = {}
     captured_tracker = {}
 
@@ -190,13 +190,118 @@ def test_pose_estimation_uses_static_full_without_conditioning(monkeypatch):
 
     assert result["status"] == "completed"
     assert captured_estimator == {
-        "min_confidence": 0.5,
+        "min_confidence": 0.3,
         "mode": "balanced",
         "inference_backend": "onnxruntime",
         "device": "cpu",
     }
-    assert captured_tracker == {"enable_smoothing": False}
+    assert captured_tracker == {
+        "enable_smoothing": False,
+        "recover_low_confidence": True,
+    }
     assert result["pose_backend"] == "rtmpose"
+    assert result["pose_quality"]["frame_coverage"] == 1.0
+
+
+def test_pose_estimation_keeps_sequence_when_one_frame_inference_fails(
+    monkeypatch,
+):
+    class _Estimator:
+        is_available = True
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def process_frame(self, _frame, frame_index):
+            if frame_index == 1:
+                raise RuntimeError("synthetic frame failure")
+            return PoseResult(
+                frame_index=frame_index,
+                keypoints=[
+                    Keypoint(0.4 + frame_index * 0.1, 0.5, 0.0, 0.9, "head")
+                ],
+                person_id=0,
+                is_primary_batter=True,
+                overall_confidence=0.9,
+                is_low_confidence=False,
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.tasks.pipeline._load_frames_from_temp_dir",
+        lambda _frames_dir: [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(3)],
+    )
+    monkeypatch.setattr("app.pipeline.rtmpose_estimator.RTMPoseEstimator", _Estimator)
+
+    result = _run_pose_estimation(
+        _analysis_id(),
+        {"frames_dir": "/tmp/read-only-frames"},
+    )
+
+    assert result["status"] == "completed"
+    assert [pose["frame_index"] for pose in result["pose_sequence"]] == [0, 1, 2]
+    assert result["pose_sequence"][1]["keypoints"][0]["x"] == pytest.approx(0.5)
+    assert result["pose_quality"]["recovered_frame_count"] == 1
+    assert result["pose_backend_attempts"][0]["inference_failure_count"] == 1
+
+
+def test_pose_estimation_falls_back_when_primary_backend_is_unavailable(
+    monkeypatch,
+):
+    class _UnavailableEstimator:
+        is_available = False
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class _FallbackEstimator:
+        is_available = True
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def process_frame(self, _frame, frame_index):
+            return PoseResult(
+                frame_index=frame_index,
+                keypoints=[Keypoint(0.5, 0.5, 0.0, 0.9, "head")],
+                person_id=0,
+                is_primary_batter=True,
+                overall_confidence=0.9,
+                is_low_confidence=False,
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.tasks.pipeline._load_frames_from_temp_dir",
+        lambda _frames_dir: [np.zeros((8, 8, 3), dtype=np.uint8)],
+    )
+    monkeypatch.setattr(
+        "app.pipeline.rtmpose_estimator.RTMPoseEstimator",
+        _UnavailableEstimator,
+    )
+    monkeypatch.setattr(
+        "app.pipeline.pose_estimator.PoseEstimator",
+        _FallbackEstimator,
+    )
+
+    result = _run_pose_estimation(
+        _analysis_id(),
+        {"frames_dir": "/tmp/read-only-frames"},
+    )
+
+    assert result["status"] == "completed"
+    assert result["pose_backend"] == "mediapipe"
+    assert [attempt["backend"] for attempt in result["pose_backend_attempts"]] == [
+        "rtmpose",
+        "mediapipe",
+    ]
 
 
 @patch("app.tasks.pipeline._run_biomechanics_analysis")
@@ -457,6 +562,7 @@ def test_biomechanics_phase_fallback_uses_actual_pose_frame_indices():
     phases = orchestrator_class.return_value.analyze.call_args.kwargs["swing_phases"]
     assert orchestrator_class.return_value.analyze.call_args.kwargs["batting_direction"] == "left"
     assert phases == {
+        "impact_frame": 25,
         "stride_start_frame": 21,
         "stride_end_frame": 23,
         "load_frame": 21,

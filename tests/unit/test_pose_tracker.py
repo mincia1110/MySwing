@@ -328,8 +328,63 @@ class TestInterpolation:
         # Linear interpolation: midpoint between (0.2, 0.4) and (0.6, 0.8)
         assert abs(frame1_wrist.x - 0.4) < 1e-6
         assert abs(frame1_wrist.y - 0.6) < 1e-6
-        assert frame1_wrist.confidence == pytest.approx(0.4)
-        assert tracked[1].overall_confidence == pytest.approx(0.8)
+        assert frame1_wrist.confidence == pytest.approx(0.736)
+        assert tracked[1].overall_confidence == pytest.approx(0.8672)
+
+    def test_short_full_frame_dropout_is_recovered(self):
+        """A one-frame detector miss should not create a hole in every joint."""
+        full_names = ALL_KEYPOINT_NAMES
+        results = [
+            make_pose_result(frame_index=0, keypoint_names=full_names),
+            PoseResult(
+                frame_index=1,
+                keypoints=[],
+                person_id=0,
+                is_primary_batter=True,
+                overall_confidence=0.0,
+                is_low_confidence=True,
+            ),
+            make_pose_result(frame_index=2, keypoint_names=full_names),
+        ]
+
+        tracked = PoseTracker(recover_low_confidence=True).track_across_frames(
+            results
+        )
+
+        assert {kp.name for kp in tracked[1].keypoints} == set(full_names)
+        assert min(kp.confidence for kp in tracked[1].keypoints) > 0.5
+        assert tracked[1].is_low_confidence is False
+
+    def test_weak_keypoint_is_replaced_by_bracketed_track(self):
+        """Retained low-score landmarks should be repaired without duplicates."""
+        full_names = ALL_KEYPOINT_NAMES
+        weak = make_pose_result(frame_index=1, keypoint_names=full_names)
+        weak.keypoints = [
+            Keypoint(
+                x=0.95 if kp.name == "left_wrist" else kp.x,
+                y=kp.y,
+                z=kp.z,
+                confidence=0.3 if kp.name == "left_wrist" else kp.confidence,
+                name=kp.name,
+            )
+            for kp in weak.keypoints
+        ]
+        results = [
+            make_pose_result(frame_index=0, keypoint_names=full_names),
+            weak,
+            make_pose_result(frame_index=2, keypoint_names=full_names),
+        ]
+
+        tracked = PoseTracker(recover_low_confidence=True).track_across_frames(
+            results
+        )
+        wrists = [
+            kp for kp in tracked[1].keypoints if kp.name == "left_wrist"
+        ]
+
+        assert len(wrists) == 1
+        assert wrists[0].confidence > 0.5
+        assert wrists[0].x != pytest.approx(0.95)
 
     def test_no_leading_or_trailing_one_sided_interpolation(self):
         """Unknown motion outside two observed endpoints should remain missing."""

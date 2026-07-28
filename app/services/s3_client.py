@@ -1,6 +1,8 @@
 """S3/MinIO client wrapper for video file storage operations."""
 
-from uuid import uuid4
+import re
+from pathlib import PurePosixPath
+from uuid import UUID, uuid4
 
 import boto3
 from botocore.exceptions import ClientError
@@ -22,12 +24,23 @@ class S3Client:
         )
         self._bucket = settings.s3_bucket_name
 
-    def generate_file_key(self, original_filename: str) -> str:
-        """Generate a unique S3 file key using UUID.
+    def generate_file_key(self, original_filename: str, owner_id: UUID | str) -> str:
+        """Generate an owner-scoped, sanitized S3 upload key.
 
-        Format: uploads/{uuid4}/{original_filename}
+        Format: uploads/{owner_uuid}/{upload_uuid}/{safe_filename}
         """
-        return f"uploads/{uuid4()}/{original_filename}"
+        owner = str(UUID(str(owner_id)))
+        normalized_name = original_filename.replace("\\", "/")
+        base_name = PurePosixPath(normalized_name).name
+        suffix = PurePosixPath(base_name).suffix.lower()
+        if suffix not in {".mp4", ".mov", ".avi"}:
+            raise ValueError("original_filename must use a supported video extension")
+
+        stem = base_name[: -len(suffix)]
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+        safe_stem = safe_stem[:100] or "video"
+        safe_filename = f"{safe_stem}{suffix}"
+        return f"uploads/{owner}/{uuid4()}/{safe_filename}"
 
     def generate_presigned_upload_url(
         self,

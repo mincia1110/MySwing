@@ -44,6 +44,10 @@ def _body_pose(frame_index: int) -> PoseResult:
             _keypoint("right_wrist", 0.51, 0.52),
             _keypoint("left_hip", 0.44, 0.68),
             _keypoint("right_hip", 0.56, 0.68),
+            _keypoint("left_knee", 0.45, 0.82),
+            _keypoint("right_knee", 0.55, 0.82),
+            _keypoint("left_ankle", 0.46, 0.96),
+            _keypoint("right_ankle", 0.54, 0.96),
         ],
         person_id=0,
         is_primary_batter=True,
@@ -155,10 +159,11 @@ def test_synthetic_white_line_near_wrist_is_detected() -> None:
         ((100.0, 52.0), (90.0, 32.0)),  # torso/shoulder edge
         ((100.0, 52.0), (76.0, 46.0)),  # forearm edge back toward the elbow
         ((100.0, 52.0), (100.0, 18.0)),  # helmet/face to hands
+        ((100.0, 52.0), (92.0, 96.0)),  # hand-to-front-foot body edge
         ((112.0, 28.0), (148.0, 28.0)),  # plausible background edge in the ROI
         ((100.0, 52.0), (180.0, 52.0)),  # exceeds the bat-length prior
     ],
-    ids=("torso", "forearm", "helmet", "background", "too-long"),
+    ids=("torso", "forearm", "helmet", "lower-leg", "background", "too-long"),
 )
 def test_body_and_background_lines_are_rejected(
     start: tuple[float, float],
@@ -218,6 +223,44 @@ def test_isolated_valid_line_abstains_without_temporal_support() -> None:
 
     assert not any(detection.detected for detection in result.detections)
     assert result.tracking_accuracy == 0.0
+
+
+def test_contact_burst_is_kept_without_whole_clip_coverage() -> None:
+    """Three adjacent bat observations are useful in an otherwise idle clip."""
+    frames = [_frame() for _ in range(20)]
+    for frame_index in (8, 9, 10):
+        _draw_line(frames[frame_index], (58, 50), (94, 50))
+    prior = _prior(len(frames))
+
+    result = PoseConstrainedBatTracker().track(
+        frames,
+        [_pose(frame_index) for frame_index in range(len(frames))],
+        120,
+        100,
+        30.0,
+        wrist_prior=prior,
+    )
+
+    observed_frames = [
+        detection.frame_index
+        for detection in result.detections
+        if detection.detected and not detection.is_predicted
+    ]
+    assert observed_frames == [8, 9, 10]
+    assert result.tracking_accuracy == pytest.approx(3 / 20)
+
+
+def test_disconnected_observation_pairs_are_not_contact_evidence() -> None:
+    marker = object()
+    selected = [marker, marker, None, None, marker, marker]
+
+    assert (
+        PoseConstrainedBatTracker._has_dense_observation_burst(
+            selected,  # type: ignore[arg-type]
+            fps=30.0,
+        )
+        is False
+    )
 
 
 def test_low_confidence_no_line_case_falls_back_to_wrist_prior() -> None:

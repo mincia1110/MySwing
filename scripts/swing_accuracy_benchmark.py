@@ -62,6 +62,7 @@ SEGMENT_ENDPOINTS = {
 }
 MIN_SEGMENT_SAMPLES = 3
 MIN_OBSERVED_BAT_LINES_FOR_PHASE_FALLBACK = 3
+MIN_OBSERVED_BAT_SPEED_HEIGHT_RATIO = 0.004
 PROXY_WARNINGS = (
     "Coverage, confidence, segment-length smoothness, and mirror-consistency "
     "checks are proxy diagnostics; they are not ground-truth keypoint or bat "
@@ -83,6 +84,7 @@ class CandidateConfig:
     static_image_mode: bool | None = None
     model_complexity: int | None = None
     rtmpose_mode: str | None = None
+    recover_low_confidence: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +94,7 @@ class CandidateConfig:
             "model_complexity": self.model_complexity,
             "min_confidence": self.min_confidence,
             "rtmpose_mode": self.rtmpose_mode,
+            "recover_low_confidence": self.recover_low_confidence,
         }
 
 
@@ -124,7 +127,9 @@ CANDIDATE_CONFIGS = {
     "rtmpose_balanced": CandidateConfig(
         "rtmpose_balanced",
         backend="rtmpose",
+        min_confidence=0.3,
         rtmpose_mode="balanced",
+        recover_low_confidence=True,
     ),
     "rtmpose_performance": CandidateConfig(
         "rtmpose_performance",
@@ -727,6 +732,12 @@ def estimate_impact_frame_from_bat_speed(
         float(median(raw_speeds[max(0, index - 1) : index + 2]))
         for index in range(len(raw_speeds))
     ]
+    minimum_contact_speed = max(
+        1.5,
+        float(video_height) * MIN_OBSERVED_BAT_SPEED_HEIGHT_RATIO,
+    )
+    if max(smoothed, default=0.0) < minimum_contact_speed:
+        return 0, 0.0, "insufficient_observed_motion"
     peak_indices: list[int] = []
     for index, speed in enumerate(smoothed):
         left = smoothed[index - 1] if index > 0 else float("-inf")
@@ -735,7 +746,7 @@ def estimate_impact_frame_from_bat_speed(
             if index + 1 < len(smoothed)
             else float("-inf")
         )
-        if speed >= left and speed >= right and speed > 0:
+        if speed >= left and speed >= right and speed >= minimum_contact_speed:
             peak_indices.append(index)
     if not peak_indices:
         peak_indices = [max(range(len(smoothed)), key=smoothed.__getitem__)]
@@ -860,8 +871,11 @@ def apply_conservative_phase_fallback(
     fps: float,
     video_width: float = 1.0,
     video_height: float = 1.0,
+    *,
+    batting_direction: str = "right",
+    allow_pose_motion: bool = False,
 ) -> dict[str, Any]:
-    """Use speed phases only for incomplete results backed by observed lines."""
+    """Add a provenance-labelled contact anchor to an incomplete result."""
     phase_ranges = raw_classifier_metrics.get("phase_ranges", {})
     missing_phases = [
         phase for phase in PHASE_NAMES if not phase_ranges.get(phase)
@@ -898,41 +912,72 @@ def apply_conservative_phase_fallback(
     needs_fallback = impact_missing
     if not needs_fallback:
         return final_metrics
-    if observed_line_count < MIN_OBSERVED_BAT_LINES_FOR_PHASE_FALLBACK:
+    if observed_line_count >= MIN_OBSERVED_BAT_LINES_FOR_PHASE_FALLBACK:
+        impact_frame, impact_confidence, impact_method = (
+            estimate_impact_frame_from_bat_speed(
+                bat_trajectory,
+                video_width,
+                video_height,
+            )
+        )
+        if impact_frame > 0:
+            phase_ranges = dict(raw_classifier_metrics.get("phase_ranges", {}))
+            phase_ranges["impact"] = [impact_frame, impact_frame]
+            phase_durations = dict(
+                raw_classifier_metrics.get("phase_durations_ms", {})
+            )
+            phase_durations["impact"] = 0.0
+            result_source = (
+                "mixed_pose_and_observed_bat_contact"
+                if any(
+                    phase_ranges.get(phase)
+                    for phase in PHASE_NAMES
+                    if phase != "impact"
+                )
+                else "observed_bat_contact_only"
+            )
+            evidence["missing_phases_after_fallback"] = [
+                phase for phase in PHASE_NAMES if not phase_ranges.get(phase)
+            ]
+            return {
+                **raw_classifier_metrics,
+                "phase_ranges": phase_ranges,
+                "phase_durations_ms": phase_durations,
+                "estimated_impact_frame": impact_frame,
+                "estimated_impact_source": f"speed_fallback.{impact_method}",
+                "estimated_impact_confidence": impact_confidence,
+                "result_source": result_source,
+                "fallback_applied": True,
+                "fallback_reason": "raw_classifier_missing_impact",
+                "fallback_evidence": evidence,
+            }
+        final_metrics["fallback_reason"] = "speed_fallback_insufficient_trajectory"
+    else:
         final_metrics["fallback_reason"] = (
             "insufficient_observed_non_predicted_bat_lines"
         )
+
+    if not allow_pose_motion:
         return final_metrics
 
-    del pose_sequence, fps  # Contact-only fallback does not invent phase windows.
-    impact_frame, impact_confidence, impact_method = (
-        estimate_impact_frame_from_bat_speed(
-            bat_trajectory,
-            video_width,
-            video_height,
-        )
+    from app.pipeline.pose_motion import estimate_impact_from_pose_motion
+
+    pose_impact = estimate_impact_from_pose_motion(
+        list(pose_sequence),
+        batting_direction=batting_direction,
+        video_width=video_width,
+        video_height=video_height,
+        fps=fps,
     )
-    if impact_frame <= 0:
-        final_metrics["fallback_reason"] = (
-            "speed_fallback_insufficient_trajectory"
-        )
+    if pose_impact is None:
+        final_metrics["fallback_reason"] = "insufficient_pose_motion_evidence"
         return final_metrics
 
     phase_ranges = dict(raw_classifier_metrics.get("phase_ranges", {}))
-    phase_ranges["impact"] = [impact_frame, impact_frame]
-    phase_durations = dict(
-        raw_classifier_metrics.get("phase_durations_ms", {})
-    )
+    phase_ranges["impact"] = [pose_impact.frame_index, pose_impact.frame_index]
+    phase_durations = dict(raw_classifier_metrics.get("phase_durations_ms", {}))
     phase_durations["impact"] = 0.0
-    result_source = (
-        "mixed_pose_and_observed_bat_contact"
-        if any(
-            phase_ranges.get(phase)
-            for phase in PHASE_NAMES
-            if phase != "impact"
-        )
-        else "observed_bat_contact_only"
-    )
+    evidence["pose_motion"] = pose_impact.evidence
     evidence["missing_phases_after_fallback"] = [
         phase for phase in PHASE_NAMES if not phase_ranges.get(phase)
     ]
@@ -940,10 +985,10 @@ def apply_conservative_phase_fallback(
         **raw_classifier_metrics,
         "phase_ranges": phase_ranges,
         "phase_durations_ms": phase_durations,
-        "estimated_impact_frame": impact_frame,
-        "estimated_impact_source": f"speed_fallback.{impact_method}",
-        "estimated_impact_confidence": impact_confidence,
-        "result_source": result_source,
+        "estimated_impact_frame": pose_impact.frame_index,
+        "estimated_impact_source": f"pose_fallback.{pose_impact.method}",
+        "estimated_impact_confidence": pose_impact.confidence,
+        "result_source": "mixed_pose_classifier_and_pose_motion_contact",
         "fallback_applied": True,
         "fallback_reason": "raw_classifier_missing_impact",
         "fallback_evidence": evidence,
@@ -1101,7 +1146,8 @@ def run_candidate(
         stage = "pose_tracking"
         try:
             tracker = pipeline.pose_tracker(
-                enable_smoothing=conditioning == "on"
+                enable_smoothing=conditioning == "on",
+                recover_low_confidence=config.recover_low_confidence,
             )
             tracked_pose_sequence = tracker.track_across_frames(
                 base_pose_sequence
@@ -1172,6 +1218,8 @@ def run_candidate(
                 fps,
                 width,
                 height,
+                batting_direction=batting_direction,
+                allow_pose_motion=config.recover_low_confidence,
             )
             bat_metrics = compute_bat_metrics(
                 bat_trajectory, len(frames), bat_method

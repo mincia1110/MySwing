@@ -4,8 +4,10 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app.api.videos import _validate_upload_file_key
 from app.main import app
 from app.models.video import VideoMetadata
 
@@ -39,6 +41,25 @@ def _mock_scalar_result(value):
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = value
     return mock_result
+
+
+def test_owner_scoped_upload_key_accepts_matching_user() -> None:
+    owner_id = uuid.uuid4()
+    _validate_upload_file_key(
+        f"uploads/{owner_id}/{uuid.uuid4()}/swing.mp4",
+        owner_id,
+    )
+
+
+def test_owner_scoped_upload_key_rejects_different_user() -> None:
+    file_owner_id = uuid.uuid4()
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_upload_file_key(
+            f"uploads/{file_owner_id}/{uuid.uuid4()}/swing.mp4",
+            uuid.uuid4(),
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 def _metadata(duration_seconds: float = 5.0) -> VideoMetadata:

@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 MAX_IDENTITY_GAP_FRAMES: int = 3
 MAX_INTERPOLATION_GAP_FRAMES: int = 5
 MAX_OCCLUSION_RATIO: float = 0.4
+MAX_FULL_FRAME_INTERPOLATION_GAP: int = 2
+ANALYSIS_KEYPOINT_CONFIDENCE: float = 0.5
 DEFAULT_SMOOTHING_WINDOW: int = 5
 MIN_SMOOTHING_SAMPLES: int = 3
 
@@ -56,15 +58,25 @@ class PoseTracker:
         max_identity_gap: int = MAX_IDENTITY_GAP_FRAMES,
         max_interpolation_gap: int = MAX_INTERPOLATION_GAP_FRAMES,
         max_occlusion_ratio: float = MAX_OCCLUSION_RATIO,
+        max_full_frame_interpolation_gap: int = MAX_FULL_FRAME_INTERPOLATION_GAP,
+        min_keypoint_confidence: float = ANALYSIS_KEYPOINT_CONFIDENCE,
+        recover_low_confidence: bool = False,
         enable_smoothing: bool = False,
         smoothing_window: int = DEFAULT_SMOOTHING_WINDOW,
     ) -> None:
         if smoothing_window < 1 or smoothing_window % 2 == 0:
             raise ValueError("smoothing_window must be a positive odd integer")
+        if not 0.0 <= min_keypoint_confidence <= 1.0:
+            raise ValueError("min_keypoint_confidence must be between 0 and 1")
+        if max_full_frame_interpolation_gap < 0:
+            raise ValueError("max_full_frame_interpolation_gap cannot be negative")
 
         self.max_identity_gap = max_identity_gap
         self.max_interpolation_gap = max_interpolation_gap
         self.max_occlusion_ratio = max_occlusion_ratio
+        self.max_full_frame_interpolation_gap = max_full_frame_interpolation_gap
+        self.min_keypoint_confidence = min_keypoint_confidence
+        self.recover_low_confidence = recover_low_confidence
         self.enable_smoothing = enable_smoothing
         self.smoothing_window = smoothing_window
         self._next_person_id: int = 0
@@ -211,16 +223,22 @@ class PoseTracker:
             if len(group) < 2:
                 continue
 
-            # Collect all keypoint names that appear in this person's sequence
+            # Collect keypoints with at least one analysis-grade observation.
+            # A name seen only at very low confidence is not a recoverable track.
             all_keypoint_names: set[str] = set()
             for _, result in group:
                 for kp in result.keypoints:
-                    all_keypoint_names.add(kp.name)
+                    if self._is_reliable_keypoint(kp):
+                        all_keypoint_names.add(kp.name)
 
             # For each frame in the group, check for missing keypoints
             for group_idx in range(len(group)):
                 seq_idx, result = group[group_idx]
-                present_names = {kp.name for kp in result.keypoints}
+                present_names = {
+                    kp.name
+                    for kp in result.keypoints
+                    if self._is_reliable_keypoint(kp)
+                }
                 missing_names = all_keypoint_names - present_names
 
                 if not missing_names:
@@ -232,14 +250,20 @@ class PoseTracker:
                     continue
                 occlusion_ratio = len(missing_names) / total_expected
 
-                # Check if occlusion ratio exceeds threshold
-                if occlusion_ratio >= max_occlusion_ratio:
-                    continue
-
                 # Find the consecutive occlusion gap for this frame
                 occlusion_gap = self._calculate_occlusion_gap(
                     group, group_idx, missing_names
                 )
+
+                # Dense partial poses are too ambiguous to reconstruct safely.
+                # A very short *complete* detector dropout is different: both
+                # surrounding skeletons constrain every joint and can bridge it.
+                is_full_frame_dropout = not present_names
+                if occlusion_ratio >= max_occlusion_ratio and not (
+                    is_full_frame_dropout
+                    and occlusion_gap <= self.max_full_frame_interpolation_gap
+                ):
+                    continue
 
                 if occlusion_gap > max_gap:
                     continue
@@ -250,7 +274,16 @@ class PoseTracker:
                 )
 
                 if interpolated_keypoints:
-                    new_keypoints = list(result.keypoints) + interpolated_keypoints
+                    interpolated_names = {
+                        keypoint.name for keypoint in interpolated_keypoints
+                    }
+                    # Replace weak observations instead of appending duplicate
+                    # names that downstream lookup order could resolve wrongly.
+                    new_keypoints = [
+                        keypoint
+                        for keypoint in result.keypoints
+                        if keypoint.name not in interpolated_names
+                    ] + interpolated_keypoints
                     new_confidence = (
                         sum(kp.confidence for kp in new_keypoints) / len(new_keypoints)
                         if new_keypoints
@@ -260,6 +293,9 @@ class PoseTracker:
                         result,
                         keypoints=new_keypoints,
                         overall_confidence=new_confidence,
+                        is_low_confidence=(
+                            new_confidence < self.min_keypoint_confidence
+                        ),
                     )
 
         return interpolated
@@ -283,7 +319,11 @@ class PoseTracker:
         # Look backward
         for i in range(current_group_idx - 1, -1, -1):
             _, prev_result = group[i]
-            prev_present = {kp.name for kp in prev_result.keypoints}
+            prev_present = {
+                kp.name
+                for kp in prev_result.keypoints
+                if self._is_reliable_keypoint(kp)
+            }
             if missing_names - prev_present:  # Still missing some
                 gap += 1
             else:
@@ -292,7 +332,11 @@ class PoseTracker:
         # Look forward
         for i in range(current_group_idx + 1, len(group)):
             _, next_result = group[i]
-            next_present = {kp.name for kp in next_result.keypoints}
+            next_present = {
+                kp.name
+                for kp in next_result.keypoints
+                if self._is_reliable_keypoint(kp)
+            }
             if missing_names - next_present:  # Still missing some
                 gap += 1
             else:
@@ -324,7 +368,12 @@ class PoseTracker:
             for i in range(current_group_idx - 1, -1, -1):
                 _, prev_result = group[i]
                 kp = next(
-                    (k for k in prev_result.keypoints if k.name == name), None
+                    (
+                        k
+                        for k in prev_result.keypoints
+                        if k.name == name and self._is_reliable_keypoint(k)
+                    ),
+                    None,
                 )
                 if kp is not None:
                     prev_kp = kp
@@ -337,7 +386,12 @@ class PoseTracker:
             for i in range(current_group_idx + 1, len(group)):
                 _, next_result = group[i]
                 kp = next(
-                    (k for k in next_result.keypoints if k.name == name), None
+                    (
+                        k
+                        for k in next_result.keypoints
+                        if k.name == name and self._is_reliable_keypoint(k)
+                    ),
+                    None,
                 )
                 if kp is not None:
                     next_kp = kp
@@ -351,12 +405,18 @@ class PoseTracker:
                 total_dist = next_frame_idx - prev_frame_idx
                 if total_dist > 0:
                     t = (current_frame_index - prev_frame_idx) / total_dist
+                    # The old 0.5 multiplier made almost every interpolated
+                    # point fall below the consumers' 0.5 confidence threshold.
+                    # Decay with gap length while retaining short, well-bracketed
+                    # observations as usable analysis evidence.
+                    missing_span = max(1, total_dist - 1)
+                    confidence_decay = max(0.60, 1.0 - 0.08 * missing_span)
                     interpolated.append(
                         Keypoint(
                             x=prev_kp.x + t * (next_kp.x - prev_kp.x),
                             y=prev_kp.y + t * (next_kp.y - prev_kp.y),
                             z=prev_kp.z + t * (next_kp.z - prev_kp.z),
-                            confidence=0.5
+                            confidence=confidence_decay
                             * min(prev_kp.confidence, next_kp.confidence),
                             name=name,
                         )
@@ -571,11 +631,12 @@ class PoseTracker:
             if len(group) < 2:
                 continue
 
-            # Determine expected keypoint count from the group
+            # Determine expected analysis-grade keypoints from the group.
             all_keypoint_names: set[str] = set()
             for _, result in group:
                 for kp in result.keypoints:
-                    all_keypoint_names.add(kp.name)
+                    if self._is_reliable_keypoint(kp):
+                        all_keypoint_names.add(kp.name)
 
             total_expected = len(all_keypoint_names)
             if total_expected == 0:
@@ -583,7 +644,11 @@ class PoseTracker:
 
             for group_idx in range(len(group)):
                 seq_idx, result = group[group_idx]
-                present_names = {kp.name for kp in result.keypoints}
+                present_names = {
+                    kp.name
+                    for kp in result.keypoints
+                    if self._is_reliable_keypoint(kp)
+                }
                 missing_names = all_keypoint_names - present_names
                 occlusion_ratio = len(missing_names) / total_expected
 
@@ -605,6 +670,13 @@ class PoseTracker:
                         )
 
         return flagged
+
+    def _is_reliable_keypoint(self, keypoint: Keypoint) -> bool:
+        """Return whether a keypoint can anchor or satisfy temporal recovery."""
+        return (
+            not self.recover_low_confidence
+            or keypoint.confidence >= self.min_keypoint_confidence
+        )
 
     def _flag_low_confidence(
         self,

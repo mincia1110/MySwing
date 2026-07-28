@@ -134,6 +134,32 @@ def test_estimate_impact_frame_normalizes_sparse_observation_gaps():
     assert impact_frame == 11
 
 
+def test_estimate_impact_frame_rejects_stationary_setup_lines():
+    """A slow bat waggle must not become contact just because it is the peak."""
+    detections = [
+        _bat_detection(
+            frame_index,
+            frame_index * 0.001,
+            coordinate_space="normalized",
+        )
+        for frame_index in range(8)
+    ]
+
+    class _Traj:
+        def __init__(self, detections):
+            self.detections = detections
+
+    impact_frame, confidence, method = _estimate_impact_frame_from_bat_speed(
+        _Traj(detections),
+        video_width=1280,
+        video_height=720,
+    )
+
+    assert impact_frame == 0
+    assert confidence == 0.0
+    assert method == "insufficient_observed_motion"
+
+
 def test_estimate_impact_frame_corrects_normalized_aspect_ratio():
     """Equivalent pixel motion yields one contact frame in portrait and landscape."""
     physical_points = [(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (40.0, 60.0)]

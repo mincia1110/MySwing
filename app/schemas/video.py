@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field
 class PresignedUrlRequest(BaseModel):
     """Request schema for generating a presigned upload URL."""
 
-    file_name: str = Field(..., description="Original file name")
+    file_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Original file name",
+    )
     content_type: str = Field(
         ...,
         pattern=r"^video/(mp4|quicktime|x-msvideo)$",

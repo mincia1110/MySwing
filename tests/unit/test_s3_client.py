@@ -2,8 +2,11 @@
 
 import re
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 from fastapi.testclient import TestClient
+
+OWNER_ID = UUID("11111111-1111-4111-8111-111111111111")
 
 
 class TestFileKeyGeneration:
@@ -15,19 +18,20 @@ class TestFileKeyGeneration:
             from app.services.s3_client import S3Client
 
             client = S3Client()
-            key = client.generate_file_key("test_video.mp4")
-            assert key.startswith("uploads/")
+            key = client.generate_file_key("test_video.mp4", OWNER_ID)
+            assert key.startswith(f"uploads/{OWNER_ID}/")
 
     def test_file_key_contains_uuid(self) -> None:
         """File key contains a valid UUID4 segment."""
         uuid_pattern = re.compile(
-            r"uploads/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/"
+            rf"uploads/{OWNER_ID}/"
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/"
         )
         with patch("app.services.s3_client.boto3"):
             from app.services.s3_client import S3Client
 
             client = S3Client()
-            key = client.generate_file_key("swing.mp4")
+            key = client.generate_file_key("swing.mp4", OWNER_ID)
             assert uuid_pattern.match(key) is not None
 
     def test_file_key_preserves_original_filename(self) -> None:
@@ -36,7 +40,7 @@ class TestFileKeyGeneration:
             from app.services.s3_client import S3Client
 
             client = S3Client()
-            key = client.generate_file_key("my_swing_video.mov")
+            key = client.generate_file_key("my_swing_video.mov", OWNER_ID)
             assert key.endswith("/my_swing_video.mov")
 
     def test_file_key_uniqueness(self) -> None:
@@ -45,9 +49,22 @@ class TestFileKeyGeneration:
             from app.services.s3_client import S3Client
 
             client = S3Client()
-            key1 = client.generate_file_key("video.mp4")
-            key2 = client.generate_file_key("video.mp4")
+            key1 = client.generate_file_key("video.mp4", OWNER_ID)
+            key2 = client.generate_file_key("video.mp4", OWNER_ID)
             assert key1 != key2
+
+    def test_file_key_strips_path_and_unsafe_characters(self) -> None:
+        with patch("app.services.s3_client.boto3"):
+            from app.services.s3_client import S3Client
+
+            key = S3Client().generate_file_key(
+                "../../private/my swing<script>.MP4",
+                OWNER_ID,
+            )
+
+        assert key.startswith(f"uploads/{OWNER_ID}/")
+        assert key.endswith("/my_swing_script.mp4")
+        assert ".." not in key
 
 
 class TestPresignedUrlGeneration:
@@ -189,6 +206,10 @@ class TestPresignedUrlEndpoint:
         assert data["upload_url"] == "https://s3/presigned"
         assert data["file_key"] == "uploads/uuid/video.mp4"
         assert data["expires_in"] == 3600
+        mock_s3.generate_file_key.assert_called_once_with(
+            "video.mp4",
+            owner_id=UUID("00000000-0000-0000-0000-000000000001"),
+        )
 
     @patch("app.api.upload.get_s3_client")
     def test_valid_quicktime_request(
@@ -234,6 +255,16 @@ class TestPresignedUrlEndpoint:
         )
 
         assert response.status_code == 422
+
+    def test_mismatched_extension_and_content_type_is_rejected(
+        self, client: TestClient
+    ) -> None:
+        response = client.post(
+            "/api/v1/upload/presigned-url",
+            json={"file_name": "video.mov", "content_type": "video/mp4"},
+        )
+
+        assert response.status_code == 400
 
     def test_missing_file_name_rejected(self, client: TestClient) -> None:
         """Missing file_name field returns 422."""
