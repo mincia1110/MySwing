@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 
-from app.api.videos import _validate_upload_file_key
+from app.api.videos import _build_video_upsert_statement, _validate_upload_file_key
 from app.main import app
 from app.models.video import VideoMetadata
 
@@ -76,6 +77,20 @@ def _metadata(duration_seconds: float = 5.0) -> VideoMetadata:
     )
 
 
+def test_video_metadata_upsert_is_atomic_and_owner_gated() -> None:
+    owner_id = uuid.uuid4()
+    statement = _build_video_upsert_statement(
+        current_user_id=owner_id,
+        file_key=f"uploads/{owner_id}/{uuid.uuid4()}/swing.mp4",
+        metadata=_metadata(),
+    )
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT ON CONSTRAINT uq_videos_file_key DO UPDATE" in sql
+    assert "WHERE videos.user_id =" in sql
+    assert "RETURNING videos.user_id" in sql
+
+
 class TestGetVideoMetadataInputPolicy:
     @patch("app.api.videos.generate_thumbnail_from_s3")
     @patch("app.api.videos.extract_metadata")
@@ -99,12 +114,16 @@ class TestGetVideoMetadataInputPolicy:
         mock_extract_metadata.return_value = _metadata(duration_seconds=8.0)
         mock_generate_thumbnail.return_value = "thumbs/swing.jpg"
 
+        current_user_id = uuid.uuid4()
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=_mock_scalar_result(None))
-        mock_session.add = MagicMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(None),
+                _mock_scalar_result(current_user_id),
+            ]
+        )
         mock_session.commit = AsyncMock()
         mock_session_factory.return_value = _SessionFactory(mock_session)
-        current_user_id = uuid.uuid4()
 
         response = client.post(
             "/api/v1/videos/uploads/test/swing.mp4/metadata",
@@ -118,8 +137,11 @@ class TestGetVideoMetadataInputPolicy:
         assert body["input_validation"]["severity"] == "warning"
         assert body["input_validation"]["reason"] == "video_longer_than_recommended"
         assert body["input_validation"]["max_duration_sec"] == 10.0
-        added_record = mock_session.add.call_args.args[0]
-        assert added_record.user_id == current_user_id
+        assert mock_session.execute.await_count == 2
+        upsert = mock_session.execute.await_args_list[1].args[0]
+        assert "ON CONFLICT ON CONSTRAINT uq_videos_file_key" in str(
+            upsert.compile(dialect=postgresql.dialect())
+        )
 
     @patch("app.api.videos.generate_thumbnail_from_s3")
     @patch("app.api.videos.extract_metadata")
@@ -143,9 +165,55 @@ class TestGetVideoMetadataInputPolicy:
         mock_generate_thumbnail.return_value = "thumbs/swing.jpg"
 
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=_mock_scalar_result(None))
-        mock_session.add = MagicMock()
+        current_user_id = uuid.uuid4()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(None),
+                _mock_scalar_result(current_user_id),
+            ]
+        )
         mock_session.commit = AsyncMock(side_effect=ConnectionError("database unavailable"))
+        mock_session.rollback = AsyncMock()
+        mock_session_factory.return_value = _SessionFactory(mock_session)
+
+        response = client.post(
+            "/api/v1/videos/uploads/test/swing.mp4/metadata",
+            headers={"X-User-Id": str(current_user_id)},
+        )
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Video metadata could not be saved. Please retry."
+        mock_session.rollback.assert_awaited_once()
+
+    @patch("app.api.videos.generate_thumbnail_from_s3")
+    @patch("app.api.videos.extract_metadata")
+    @patch("app.api.videos.get_s3_client")
+    @patch("app.api.videos.async_session_factory")
+    def test_metadata_upsert_rejects_owner_created_during_race(
+        self,
+        mock_session_factory,
+        mock_get_s3_client,
+        mock_extract_metadata,
+        mock_generate_thumbnail,
+        client,
+    ):
+        """A conflicting insert after the pre-check cannot change another owner."""
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": 1024}
+        mock_s3._client.download_file.return_value = None
+        mock_s3._bucket = "myswing-videos"
+        mock_get_s3_client.return_value = mock_s3
+        mock_extract_metadata.return_value = _metadata()
+        mock_generate_thumbnail.return_value = "thumbs/swing.jpg"
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(None),
+                _mock_scalar_result(None),
+            ]
+        )
+        mock_session.rollback = AsyncMock()
         mock_session_factory.return_value = _SessionFactory(mock_session)
 
         response = client.post(
@@ -153,8 +221,10 @@ class TestGetVideoMetadataInputPolicy:
             headers={"X-User-Id": str(uuid.uuid4())},
         )
 
-        assert response.status_code == 503
-        assert response.json()["detail"] == "Video metadata could not be saved. Please retry."
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Video file belongs to a different user."
+        mock_session.rollback.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()
 
     @patch("app.api.videos.generate_thumbnail_from_s3")
     @patch("app.api.videos.extract_metadata")

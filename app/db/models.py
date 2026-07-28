@@ -99,7 +99,7 @@ class VideoTable(Base):
 
     __tablename__ = "videos"
     __table_args__ = (
-        Index("ix_videos_file_key", "file_key"),
+        UniqueConstraint("file_key", name="uq_videos_file_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

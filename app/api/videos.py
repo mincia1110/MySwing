@@ -13,11 +13,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.postgresql.dml import Insert
 
 from app.api.dependencies import get_current_user_id
 from app.core.config import settings
 from app.db.models import VideoTable
 from app.db.session import async_session_factory
+from app.models.video import VideoMetadata
 from app.schemas.video import ResolutionResponse, VideoMetadataWithThumbnailResponse
 from app.services.s3_client import get_s3_client
 from app.services.thumbnail_service import generate_thumbnail_from_s3
@@ -60,6 +63,74 @@ def _validate_upload_file_key(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Upload file_key belongs to a different user.",
             )
+
+
+def _build_video_upsert_statement(
+    *,
+    current_user_id: UUID,
+    file_key: str,
+    metadata: VideoMetadata,
+) -> Insert:
+    """Build an owner-gated PostgreSQL metadata upsert.
+
+    The unique ``file_key`` constraint serializes concurrent requests. The
+    conflict ``WHERE`` clause deliberately returns no row for another owner,
+    allowing the API to reject the request without changing that record.
+    """
+    extension = Path(file_key).suffix.lstrip(".").lower() or "mp4"
+    statement = postgresql_insert(VideoTable).values(
+        user_id=current_user_id,
+        file_key=file_key,
+        file_name=metadata.file_name,
+        file_size_bytes=metadata.file_size_bytes,
+        duration_seconds=metadata.duration_seconds,
+        resolution_width=metadata.resolution_width,
+        resolution_height=metadata.resolution_height,
+        frame_rate=metadata.frame_rate,
+        format=extension,
+    )
+    return statement.on_conflict_do_update(
+        constraint="uq_videos_file_key",
+        set_={
+            "file_name": statement.excluded.file_name,
+            "file_size_bytes": statement.excluded.file_size_bytes,
+            "duration_seconds": statement.excluded.duration_seconds,
+            "resolution_width": statement.excluded.resolution_width,
+            "resolution_height": statement.excluded.resolution_height,
+            "frame_rate": statement.excluded.frame_rate,
+            "format": statement.excluded.format,
+        },
+        where=VideoTable.user_id == current_user_id,
+    ).returning(VideoTable.user_id)
+
+
+async def _save_video_metadata_atomically(
+    *,
+    current_user_id: UUID,
+    file_key: str,
+    metadata: VideoMetadata,
+) -> None:
+    """Persist metadata atomically and reject cross-owner conflicts."""
+    factory = async_session_factory()
+    async with factory() as session:
+        try:
+            result = await session.execute(
+                _build_video_upsert_statement(
+                    current_user_id=current_user_id,
+                    file_key=file_key,
+                    metadata=metadata,
+                )
+            )
+            persisted_owner_id = result.scalar_one_or_none()
+            if persisted_owner_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Video file belongs to a different user.",
+                )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 @router.post(
@@ -158,45 +229,14 @@ async def get_video_metadata(
             # Thumbnail generation is non-critical; log and continue
             logger.warning("Thumbnail generation failed for %s: %s", file_key, e)
 
-        # Save video record to DB (upsert by file_key)
+        # Save video record with a single owner-gated atomic upsert.
         try:
-            factory = async_session_factory()
-            async with factory() as session:
-                # Check if video record already exists
-                existing = await session.execute(
-                    select(VideoTable).where(VideoTable.file_key == file_key)
-                )
-                video_record = existing.scalar_one_or_none()
-                if video_record is None:
-                    # Determine format from file extension
-                    ext = Path(file_key).suffix.lstrip(".").lower() or "mp4"
-                    video_record = VideoTable(
-                        user_id=current_user_id,
-                        file_key=file_key,
-                        file_name=metadata.file_name,
-                        file_size_bytes=metadata.file_size_bytes,
-                        duration_seconds=metadata.duration_seconds,
-                        resolution_width=metadata.resolution_width,
-                        resolution_height=metadata.resolution_height,
-                        frame_rate=metadata.frame_rate,
-                        format=ext,
-                    )
-                    session.add(video_record)
-                elif video_record.user_id != current_user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Video file belongs to a different user.",
-                    )
-                else:
-                    # Update existing record
-                    video_record.file_name = metadata.file_name
-                    video_record.file_size_bytes = metadata.file_size_bytes
-                    video_record.duration_seconds = metadata.duration_seconds
-                    video_record.resolution_width = metadata.resolution_width
-                    video_record.resolution_height = metadata.resolution_height
-                    video_record.frame_rate = metadata.frame_rate
-                await session.commit()
-                logger.info("Video record saved for file_key=%s", file_key)
+            await _save_video_metadata_atomically(
+                current_user_id=current_user_id,
+                file_key=file_key,
+                metadata=metadata,
+            )
+            logger.info("Video record saved for file_key=%s", file_key)
         except HTTPException:
             raise
         except Exception:

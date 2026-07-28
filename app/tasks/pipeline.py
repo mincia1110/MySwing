@@ -1559,6 +1559,89 @@ def _transitions_from_phase_ranges(phases: dict) -> list[dict[str, Any]]:
     return transitions
 
 
+def _swing_window_from_pose_estimate(
+    pose_impact: Any | None,
+) -> dict[str, Any] | None:
+    """Convert pose-motion provenance into a stable analysis-window contract."""
+    if pose_impact is None:
+        return None
+    evidence = getattr(pose_impact, "evidence", {})
+    try:
+        start_frame = int(evidence["selected_window_start_frame"])
+        end_frame = int(evidence["selected_window_end_frame"])
+        candidate_count = int(evidence["substantial_motion_segment_count"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if start_frame > end_frame or candidate_count < 1:
+        return None
+    multiple_swing_detected = candidate_count > 1
+    return {
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "selected_impact_frame": int(pose_impact.frame_index),
+        "candidate_count": candidate_count,
+        "multiple_swing_detected": multiple_swing_detected,
+        "isolation_applied": multiple_swing_detected,
+        "selection_policy": "earliest_substantial_swing",
+        "candidates": evidence.get("swing_candidates", []),
+    }
+
+
+def _isolated_swing_window_bounds(
+    swing_window: dict[str, Any] | None,
+) -> tuple[int, int] | None:
+    """Return validated bounds only when multi-swing isolation is required."""
+    if not isinstance(swing_window, dict) or not swing_window.get(
+        "isolation_applied"
+    ):
+        return None
+    try:
+        start_frame = int(swing_window["start_frame"])
+        end_frame = int(swing_window["end_frame"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if start_frame > end_frame:
+        return None
+    return start_frame, end_frame
+
+
+def _filter_pose_sequence_to_swing_window(
+    pose_sequence: list[Any],
+    swing_window: dict[str, Any] | None,
+) -> list[Any]:
+    bounds = _isolated_swing_window_bounds(swing_window)
+    if bounds is None:
+        return pose_sequence
+    start_frame, end_frame = bounds
+    filtered = [
+        pose
+        for pose in pose_sequence
+        if start_frame <= int(pose.frame_index) <= end_frame
+    ]
+    return filtered or pose_sequence
+
+
+def _filter_bat_trajectory_to_swing_window(
+    bat_trajectory: Any,
+    swing_window: dict[str, Any] | None,
+) -> Any:
+    bounds = _isolated_swing_window_bounds(swing_window)
+    if bounds is None:
+        return bat_trajectory
+    start_frame, end_frame = bounds
+    detections = [
+        detection
+        for detection in getattr(bat_trajectory, "detections", [])
+        if start_frame <= int(detection.frame_index) <= end_frame
+    ]
+
+    # Recompute speed/failure arrays so they stay aligned with the sliced
+    # detections instead of carrying intervals from an excluded second swing.
+    from app.pipeline.bat_tracker import BatTracker
+
+    return BatTracker().track_trajectory(detections)
+
+
 def _run_swing_classification(
     analysis_id: str,
     pose_result: dict,
@@ -1584,7 +1667,9 @@ def _run_swing_classification(
     """
     logger.info("Classifying swing phases for analysis_id=%s", analysis_id)
 
+    swing_window: dict[str, Any] | None = None
     try:
+        from app.pipeline.pose_motion import estimate_impact_from_pose_motion
         from app.pipeline.swing_classifier import SwingPhaseClassifier
 
         # Deserialize inputs
@@ -1598,11 +1683,28 @@ def _run_swing_classification(
                 "transitions": [],
                 "phase_durations_ms": {},
                 "anomalies": [],
+                "swing_window": None,
                 "status": "completed",
             }
 
         pose_sequence = _deserialize_pose_sequence(pose_sequence_data)
         bat_trajectory = _deserialize_bat_trajectory(bat_trajectory_data)
+        pose_motion_estimate = estimate_impact_from_pose_motion(
+            pose_sequence,
+            batting_direction=batting_direction,
+            video_width=video_width,
+            video_height=video_height,
+            fps=fps,
+        )
+        swing_window = _swing_window_from_pose_estimate(pose_motion_estimate)
+        analysis_pose_sequence = _filter_pose_sequence_to_swing_window(
+            pose_sequence,
+            swing_window,
+        )
+        analysis_bat_trajectory = _filter_bat_trajectory_to_swing_window(
+            bat_trajectory,
+            swing_window,
+        )
 
         # Create classifier (batting_direction from user profile if available)
         classifier = SwingPhaseClassifier(
@@ -1613,7 +1715,7 @@ def _run_swing_classification(
 
         # Classify phases
         phase_result = classifier.classify_phases(
-            pose_sequence, bat_trajectory, fps
+            analysis_pose_sequence, analysis_bat_trajectory, fps
         )
 
         # Serialize result
@@ -1635,7 +1737,7 @@ def _run_swing_classification(
         missing_core_phases = expected_phases.difference(phases_dict)
         observed_bat_detections = sum(
             1
-            for detection in bat_trajectory.detections
+            for detection in analysis_bat_trajectory.detections
             if detection.detected and not detection.is_predicted
         )
         phase_source = (
@@ -1647,10 +1749,12 @@ def _run_swing_classification(
             "missing_phases": sorted(missing_core_phases),
             "observed_non_predicted_bat_lines": observed_bat_detections,
         }
+        if swing_window is not None:
+            phase_evidence["swing_window"] = swing_window
         if "impact" not in phases_dict and observed_bat_detections >= 3:
             impact_frame, impact_confidence, impact_method = (
                 _estimate_impact_frame_from_bat_speed(
-                    bat_trajectory,
+                    analysis_bat_trajectory,
                     video_width,
                     video_height,
                 )
@@ -1687,8 +1791,6 @@ def _run_swing_classification(
         # measurements even when the barrel line itself is not observable. Keep
         # that provenance explicit so bat speed/angle guards continue to abstain.
         if "impact" not in serialized.get("phases", {}):
-            from app.pipeline.pose_motion import estimate_impact_from_pose_motion
-
             earliest_frame = None
             rotation_range = phases_dict.get("rotation")
             if (
@@ -1697,14 +1799,19 @@ def _run_swing_classification(
             ):
                 earliest_frame = int(rotation_range[0])
 
-            pose_impact = estimate_impact_from_pose_motion(
-                pose_sequence,
-                batting_direction=batting_direction,
-                video_width=video_width,
-                video_height=video_height,
-                fps=fps,
-                earliest_frame=earliest_frame,
-            )
+            pose_impact = pose_motion_estimate
+            if pose_impact is None or (
+                earliest_frame is not None
+                and pose_impact.frame_index < earliest_frame
+            ):
+                pose_impact = estimate_impact_from_pose_motion(
+                    analysis_pose_sequence,
+                    batting_direction=batting_direction,
+                    video_width=video_width,
+                    video_height=video_height,
+                    fps=fps,
+                    earliest_frame=earliest_frame,
+                )
             if pose_impact is not None:
                 phases_dict = dict(serialized.get("phases", {}))
                 phases_dict["impact"] = [
@@ -1761,6 +1868,7 @@ def _run_swing_classification(
             ),
             "phase_source": phase_source,
             "phase_evidence": phase_evidence,
+            "swing_window": swing_window,
             "status": "completed",
         }
 
@@ -1779,6 +1887,7 @@ def _run_swing_classification(
             "classification_failures": [],
             "phase_source": "unavailable",
             "phase_evidence": {"error": str(e)},
+            "swing_window": swing_window,
             "status": "partial_failure",
             "error": str(e),
         }
@@ -1858,6 +1967,15 @@ def _run_biomechanics_analysis(
 
         pose_sequence = _deserialize_pose_sequence(pose_sequence_data)
         bat_trajectory = _deserialize_bat_trajectory(bat_trajectory_data)
+        swing_window = swing_phases_result.get("swing_window")
+        pose_sequence = _filter_pose_sequence_to_swing_window(
+            pose_sequence,
+            swing_window,
+        )
+        bat_trajectory = _filter_bat_trajectory_to_swing_window(
+            bat_trajectory,
+            swing_window,
+        )
         video_width = (
             preprocessing_result.get("video_width", 1920)
             if preprocessing_result
@@ -1943,6 +2061,7 @@ def _run_biomechanics_analysis(
                     "impact_frame": None,
                     "impact_frame_method": "unavailable",
                     "impact_frame_confidence": 0.0,
+                    "swing_window": swing_window,
                     "analysis_metadata": _build_analysis_metadata(
                         preprocessing_result
                     ),
@@ -2030,6 +2149,7 @@ def _run_biomechanics_analysis(
         serialized["impact_frame"] = int(impact_frame)
         serialized["impact_frame_method"] = impact_frame_method
         serialized["impact_frame_confidence"] = float(impact_frame_confidence)
+        serialized["swing_window"] = swing_window
         serialized["analysis_metadata"] = _build_analysis_metadata(preprocessing_result)
         serialized["status"] = "completed"
         return serialized
@@ -2179,6 +2299,10 @@ def _run_swing_evaluation(
             from app.models.swing import SwingPhaseResult as SwingPhaseResultModel
 
             pose_sequence = _deserialize_pose_sequence(pose_sequence_data)
+            pose_sequence = _filter_pose_sequence_to_swing_window(
+                pose_sequence,
+                swing_phases_result.get("swing_window"),
+            )
             # Rebuild SwingPhaseResult for weight transfer analyzer
             wt_analyzer = WeightTransferAnalyzer()
             # Create a minimal SwingPhaseResult from the dict

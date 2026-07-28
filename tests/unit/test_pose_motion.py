@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from app.models.pose import Keypoint, PoseResult
 from app.pipeline.pose_motion import estimate_impact_from_pose_motion
 from app.tasks.pipeline import (
@@ -59,6 +61,25 @@ def _swing_poses() -> list[PoseResult]:
     poses = []
     for frame_index in range(50):
         hand_x += increments.get(frame_index, 0.0002)
+        poses.append(_pose(frame_index, hand_x))
+    return poses
+
+
+def _repeated_motion_poses() -> list[PoseResult]:
+    hand_x = 0.30
+    poses = []
+    for frame_index in range(80):
+        if 18 <= frame_index <= 28:
+            step = (0.006, 0.010, 0.018, 0.030, 0.045, 0.050)[
+                min(frame_index - 18, 5)
+            ]
+        elif 55 <= frame_index <= 66:
+            step = (0.008, 0.014, 0.024, 0.040, 0.060, 0.070)[
+                min(frame_index - 55, 5)
+            ]
+        else:
+            step = 0.0002
+        hand_x += step
         poses.append(_pose(frame_index, hand_x))
     return poses
 
@@ -142,24 +163,8 @@ def test_pose_motion_requires_torso_support() -> None:
 
 
 def test_pose_motion_prefers_swing_burst_before_stronger_reset() -> None:
-    hand_x = 0.30
-    poses = []
-    for frame_index in range(80):
-        if 18 <= frame_index <= 28:
-            step = (0.006, 0.010, 0.018, 0.030, 0.045, 0.050)[
-                min(frame_index - 18, 5)
-            ]
-        elif 55 <= frame_index <= 66:
-            step = (0.008, 0.014, 0.024, 0.040, 0.060, 0.070)[
-                min(frame_index - 55, 5)
-            ]
-        else:
-            step = 0.0002
-        hand_x += step
-        poses.append(_pose(frame_index, hand_x))
-
     estimate = estimate_impact_from_pose_motion(
-        poses,
+        _repeated_motion_poses(),
         video_width=1280,
         video_height=720,
         fps=30.0,
@@ -170,6 +175,57 @@ def test_pose_motion_prefers_swing_burst_before_stronger_reset() -> None:
     assert estimate.evidence["segment_selection"] == (
         "earliest_substantial_burst"
     )
+    assert estimate.evidence["multiple_swing_detected"] is True
+    assert estimate.evidence["substantial_motion_segment_count"] == 2
+    assert estimate.evidence["selected_window_end_frame"] < 55
+
+
+def test_pipeline_isolates_repeated_clip_before_downstream_analysis() -> None:
+    poses = _repeated_motion_poses()
+    phase_result = _run_swing_classification(
+        "analysis-id",
+        {"pose_sequence": _serialize_dataclass(poses)},
+        {"bat_trajectory": {}},
+        30.0,
+        video_width=1280,
+        video_height=720,
+    )
+
+    swing_window = phase_result["swing_window"]
+    assert swing_window["multiple_swing_detected"] is True
+    assert swing_window["isolation_applied"] is True
+    assert swing_window["candidate_count"] == 2
+    assert swing_window["end_frame"] < 55
+    assert all(
+        swing_window["start_frame"] <= frame <= swing_window["end_frame"]
+        for phase_range in phase_result["phases"].values()
+        for frame in phase_range
+    )
+
+    with patch(
+        "app.pipeline.biomechanics_analyzer.BiomechanicsOrchestrator"
+    ) as orchestrator_class:
+        orchestrator_class.return_value.analyze.return_value = {}
+        _run_biomechanics_analysis(
+            "analysis-id",
+            {"pose_sequence": _serialize_dataclass(poses)},
+            {"bat_trajectory": {}},
+            phase_result,
+            {
+                "height": 180.0,
+                "bat_length": 33.0,
+                "batting_direction": "right",
+            },
+            30.0,
+            {"video_width": 1280, "video_height": 720, "fps": 30.0},
+        )
+
+    downstream_poses = orchestrator_class.return_value.analyze.call_args.kwargs[
+        "pose_sequence"
+    ]
+    assert downstream_poses[0].frame_index >= swing_window["start_frame"]
+    assert downstream_poses[-1].frame_index <= swing_window["end_frame"]
+    assert downstream_poses[-1].frame_index < 55
 
 
 def test_pipeline_adds_pose_motion_anchor_without_claiming_bat_support() -> None:

@@ -23,6 +23,9 @@ def test_default_settings() -> None:
     assert settings.rtmpose_mode == "balanced"
     assert settings.rtmpose_inference_backend == "onnxruntime"
     assert settings.rtmpose_device == "cpu"
+    assert settings.auth_mode == "signed_proxy"
+    assert settings.auth_proxy_secret is None
+    assert settings.auth_signature_ttl_seconds == 60
 
 
 @pytest.mark.unit

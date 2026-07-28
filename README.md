@@ -4,7 +4,7 @@ English | [한국어](README.ko.md)
 
 MySwing is a file-upload based baseball swing analysis service optimized for short clips that contain exactly one baseball swing. The ideal input is about 5 seconds; the recommended range is 3-7 seconds, and videos longer than 10 seconds are rejected before expensive analysis starts. It uses computer vision with an accuracy-first RTMPose ONNX backend (and a configurable MediaPipe fallback) plus wrist/elbow-based bat estimation to detect body posture and bat motion, then generates biomechanics and baseball-theory driven analysis reports.
 
-> This project is currently designed for local development and validation with Docker Compose. Production deployments must configure storage, CORS, file visibility, authentication, and authorization policies separately.
+> This project is currently designed for local development and validation with Docker Compose. Production deployments must configure storage, CORS, file visibility, and a trusted authentication proxy; the API fails closed by default when that proxy is not configured.
 
 ## Features
 
@@ -117,6 +117,18 @@ Vite proxies `/api` requests to the backend. If the backend runs elsewhere, set 
 VITE_API_BASE_URL=http://localhost:8000/api/v1
 ```
 
+### Authentication modes
+
+`.env.example` explicitly enables `MYSWING_AUTH_MODE=development` for the local-only UI. That mode accepts an unsigned `X-User-Id` and falls back to the fixed development user when the header is absent. Do not expose it publicly.
+
+The default `signed_proxy` mode requires a random `MYSWING_AUTH_PROXY_SECRET` of at least 32 bytes and these headers from a trusted reverse proxy after it authenticates the user:
+
+- `X-User-Id`: canonical UUID
+- `X-MySwing-Auth-Timestamp`: current Unix timestamp in seconds
+- `X-MySwing-Auth-Signature`: lowercase HMAC-SHA256 hex digest
+
+The signed byte payload is `timestamp + "\n" + HTTP_METHOD + "\n" + request_path + "\n" + canonical_user_uuid`. The proxy must strip all client-supplied identity/signature headers before recreating them, use HTTPS, and keep its clock synchronized. Signatures expire after 60 seconds by default (`MYSWING_AUTH_SIGNATURE_TTL_SECONDS`, maximum 300).
+
 ## API Endpoints
 
 | Method | Path | Description |
@@ -141,9 +153,9 @@ MySwing is optimized for **one swing per video**, not long-session analysis.
 - Recommended clip length: **3-7 seconds**
 - Ideal clip length: **about 5 seconds**
 - Hard maximum duration: **10 seconds**; longer videos are rejected before the analysis task is queued
-- Long videos, multiple swings, batting practice sessions, and full game clips are not supported
-- MySwing does **not** currently detect and extract a swing from a long video
-- Trim videos outside MySwing before uploading; this task does not include an in-app trimming UI
+- Long videos, batting practice sessions, and full game clips are not supported
+- If several substantial swing-like motion bursts are detected inside an accepted short clip, MySwing isolates and analyzes the earliest candidate and records the candidate/window evidence in `swing_phases_data.swing_window`
+- This is a conservative safety fallback rather than long-video segmentation; trim to one swing before uploading for the most reliable result
 
 ## Analysis Pipeline
 

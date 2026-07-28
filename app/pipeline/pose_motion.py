@@ -330,8 +330,53 @@ def estimate_impact_from_pose_motion(
         qualified_segments,
         key=lambda item: smoothed[item[1][0]].frame_index,
     )
+    qualified_by_time = sorted(
+        qualified_segments,
+        key=lambda item: smoothed[item[1][0]].frame_index,
+    )
     peak_index = _first_substantial_peak(smoothed, best_segment)
     peak_sample = smoothed[peak_index]
+
+    candidate_windows = []
+    for score, segment in qualified_by_time:
+        candidate_peak_index = _first_substantial_peak(smoothed, segment)
+        candidate_windows.append(
+            {
+                "start_frame": smoothed[segment[0]].frame_index,
+                "end_frame": smoothed[segment[-1]].frame_index,
+                "peak_frame": smoothed[candidate_peak_index].frame_index,
+                "relative_score": round(score / strongest_score, 4),
+            }
+        )
+
+    # Include setup and follow-through around the selected burst, but stop at
+    # the midpoint before another substantial burst. This turns a repeated-swing
+    # clip into one deterministic analysis window without renumbering frames.
+    clip_start = unique_poses[0].frame_index
+    clip_end = unique_poses[-1].frame_index
+    selected_start = smoothed[best_segment[0]].frame_index
+    selected_end = smoothed[best_segment[-1]].frame_index
+    window_start = max(
+        clip_start,
+        selected_start - max(6, int(round(float(fps) * 0.75))),
+    )
+    window_end = min(
+        clip_end,
+        selected_end + max(6, int(round(float(fps) * 0.65))),
+    )
+    selected_position = next(
+        index
+        for index, (_, segment) in enumerate(qualified_by_time)
+        if segment is best_segment
+    )
+    if selected_position > 0:
+        previous_segment = qualified_by_time[selected_position - 1][1]
+        previous_end = smoothed[previous_segment[-1]].frame_index
+        window_start = max(window_start, (previous_end + selected_start + 1) // 2)
+    if selected_position + 1 < len(qualified_by_time):
+        next_segment = qualified_by_time[selected_position + 1][1]
+        next_start = smoothed[next_segment[0]].frame_index
+        window_end = min(window_end, (selected_end + next_start) // 2)
 
     before = [
         smoothed[index].speed
@@ -394,9 +439,13 @@ def estimate_impact_from_pose_motion(
             "speed_sample_count": len(smoothed),
             "motion_segment_count": len(segments),
             "substantial_motion_segment_count": len(qualified_segments),
+            "multiple_swing_detected": len(qualified_segments) > 1,
+            "swing_candidates": candidate_windows,
             "segment_selection": "earliest_substantial_burst",
             "selected_segment_start_frame": smoothed[best_segment[0]].frame_index,
             "selected_segment_end_frame": smoothed[best_segment[-1]].frame_index,
+            "selected_window_start_frame": window_start,
+            "selected_window_end_frame": window_end,
             "peak_speed_frame_height_per_frame": round(peak_sample.speed, 6),
             "quiet_speed_baseline": round(baseline, 6),
             "peak_prominence": round(prominence, 4),

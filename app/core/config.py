@@ -2,6 +2,7 @@
 
 from typing import Literal
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -11,6 +12,14 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "MySwing"
     debug: bool = False
+
+    # Authentication
+    # Production-facing deployments fail closed unless a trusted reverse proxy
+    # signs the authenticated user identity. Local development must opt in to
+    # the intentionally insecure convenience mode explicitly.
+    auth_mode: Literal["signed_proxy", "development"] = "signed_proxy"
+    auth_proxy_secret: SecretStr | None = None
+    auth_signature_ttl_seconds: int = Field(default=60, ge=1, le=300)
 
     # Pose inference
     pose_backend: Literal["mediapipe", "rtmpose"] = "rtmpose"

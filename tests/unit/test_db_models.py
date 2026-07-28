@@ -161,10 +161,10 @@ class TestVideoTable:
         fk = list(user_id_col.foreign_keys)[0]
         assert str(fk.column) == "users.id"
 
-    def test_file_key_index(self):
+    def test_file_key_is_unique(self):
         table = VideoTable.__table__
-        index_names = {index.name for index in table.indexes}
-        assert "ix_videos_file_key" in index_names
+        constraint_names = {constraint.name for constraint in table.constraints}
+        assert "uq_videos_file_key" in constraint_names
 
     def test_instance_creation(self):
         video = VideoTable(
