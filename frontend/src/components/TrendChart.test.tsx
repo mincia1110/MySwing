@@ -119,4 +119,23 @@ describe("TrendChart", () => {
       screen.getByTestId("trend-chart-metric-bat_speed"),
     ).toHaveAttribute("data-points", "30");
   });
+
+  it("shows localized metric labels while keeping raw identifiers as keys", () => {
+    const data: TrendDataResponse = {
+      metrics_history: {
+        bat_speed: [
+          makePoint("2025-01-01T00:00:00Z", 100),
+          makePoint("2025-01-02T00:00:00Z", 110),
+        ],
+      },
+      total_recordings: 2,
+    };
+    render(<TrendChart trendData={data} />);
+
+    const metric = screen.getByTestId("trend-chart-metric-bat_speed");
+    expect(metric).toHaveTextContent("배트 속도");
+    expect(metric.querySelector(".trend-chart__metric-name")).toHaveTextContent(
+      "배트 속도",
+    );
+  });
 });

@@ -125,6 +125,28 @@ describe("BiomechanicsMeasurements", () => {
     );
   });
 
+  it("localizes unmeasurable metric identifiers outside the projected cards", () => {
+    renderInLanguage(
+      <BiomechanicsMeasurements
+        biomechanics={{
+          ...availableBiomechanics,
+          unmeasurable_metrics: [
+            { metric_name: "kinematic_chain", reason: "reason one" },
+            {
+              metric_name: "hip_shoulder_separation",
+              reason: "reason two",
+            },
+          ],
+        }}
+      />,
+      "ko",
+    );
+
+    const reasons = screen.getByTestId("biomechanics-unmeasurable");
+    expect(reasons).toHaveTextContent("키네마틱 체인: reason one");
+    expect(reasons).toHaveTextContent("힙-숄더 분리: reason two");
+  });
+
   it("provides the same accuracy caveat in Korean", () => {
     renderInLanguage(
       <BiomechanicsMeasurements
@@ -141,5 +163,47 @@ describe("BiomechanicsMeasurements", () => {
     expect(screen.getByTestId("biomechanics-phase-source")).toHaveTextContent(
       "포즈 기반 분류기",
     );
+  });
+
+  it("labels the pose-motion contact provenance in Korean", () => {
+    renderInLanguage(
+      <BiomechanicsMeasurements
+        biomechanics={null}
+        phaseSource="mixed_pose_classifier_and_pose_motion_contact"
+      />,
+      "ko",
+    );
+    expect(screen.getByTestId("biomechanics-phase-source")).toHaveTextContent(
+      "포즈 기반 구간 + 포즈 동작 기반 접촉 추정",
+    );
+    expect(
+      screen.getByTestId("biomechanics-phase-source"),
+    ).not.toHaveTextContent("mixed_pose_classifier_and_pose_motion_contact");
+  });
+
+  it("labels the pose-motion contact provenance in English", () => {
+    renderInLanguage(
+      <BiomechanicsMeasurements
+        biomechanics={null}
+        phaseSource="mixed_pose_classifier_and_pose_motion_contact"
+      />,
+      "en",
+    );
+    expect(screen.getByTestId("biomechanics-phase-source")).toHaveTextContent(
+      "Pose-derived phases + pose-motion contact estimate",
+    );
+  });
+
+  it("humanizes unknown phase sources instead of leaking snake_case", () => {
+    renderInLanguage(
+      <BiomechanicsMeasurements
+        biomechanics={null}
+        phaseSource="some_future_source"
+      />,
+      "en",
+    );
+    const source = screen.getByTestId("biomechanics-phase-source");
+    expect(source).toHaveTextContent("some future source");
+    expect(source).not.toHaveTextContent("some_future_source");
   });
 });

@@ -35,6 +35,7 @@ from app.schemas.analysis import (
     AnalysisCreateResponse,
     AnalysisReportResponse,
     AnalysisStatusResponse,
+    BiomechanicsResponse,
     DrillRecommendationResponse,
     ImprovementAreaResponse,
     MetricEvaluationResponse,
@@ -43,6 +44,7 @@ from app.schemas.analysis import (
 )
 from app.services.localization import (
     localize_drill_recommendations,
+    localize_unmeasurable_metrics,
     normalize_locale,
 )
 from app.services.s3_client import get_s3_client
@@ -458,9 +460,10 @@ async def get_analysis_report(
             drill_recommendations.append(DrillRecommendationResponse(**drill_item))
         except Exception:
             logger.warning("Skipping invalid drill item: %s", drill_item)
+    response_locale = normalize_locale(locale)
     drill_recommendations = localize_drill_recommendations(
         drill_recommendations,
-        normalize_locale(locale),
+        response_locale,
     )
 
     # Build swing phases (validate through Pydantic model)
@@ -514,7 +517,15 @@ async def get_analysis_report(
     biomechanics = None
     bio_data = analysis_result.biomechanics_data or {}
     if bio_data and isinstance(bio_data, dict) and "bat_speed" in bio_data:
-        biomechanics = bio_data
+        parsed_biomechanics = BiomechanicsResponse(**bio_data)
+        biomechanics = parsed_biomechanics.model_copy(
+            update={
+                "unmeasurable_metrics": localize_unmeasurable_metrics(
+                    parsed_biomechanics.unmeasurable_metrics,
+                    response_locale,
+                )
+            }
+        )
 
     # Build trend data for this user (Requirement 8.7)
     trend_data: TrendDataResponse | None = None

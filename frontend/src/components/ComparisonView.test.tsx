@@ -3,6 +3,29 @@ import { describe, expect, it } from "vitest";
 import { ComparisonView } from "./ComparisonView";
 import type { SwingPhaseResponse } from "../types/analysis";
 
+/**
+ * Reads the component stylesheet from disk. Vitest stubs CSS imports
+ * (test.css = false), so the mobile layout contract is verified against the
+ * file contents instead. Node type declarations are not installed, hence the
+ * scoped suppressions; vitest provides these modules at runtime.
+ */
+async function readComparisonCss(): Promise<string> {
+  // @ts-expect-error - node:fs type declarations are not installed
+  const { readFileSync } = (await import("node:fs")) as {
+    readFileSync: (path: string, encoding: string) => string;
+  };
+  // @ts-expect-error - node:url type declarations are not installed
+  const { fileURLToPath } = (await import("node:url")) as {
+    fileURLToPath: (url: string) => string;
+  };
+  const testFilePath = fileURLToPath(import.meta.url);
+  const cssPath = `${testFilePath.slice(
+    0,
+    testFilePath.lastIndexOf("/"),
+  )}/ComparisonView.css`;
+  return readFileSync(cssPath, "utf8");
+}
+
 const userPhases: SwingPhaseResponse[] = [
   { phase: "stance", start_frame: 0, end_frame: 6, duration_ms: 200 },
   { phase: "load", start_frame: 6, end_frame: 16, duration_ms: 333 },
@@ -65,5 +88,28 @@ describe("ComparisonView", () => {
   it("renders an empty state when both arrays are empty", () => {
     render(<ComparisonView userPhases={[]} referencePhases={[]} />);
     expect(screen.getByTestId("comparison-view-empty")).toBeInTheDocument();
+  });
+
+  it("keeps the comparison bars present for every phase row", () => {
+    render(<ComparisonView userPhases={userPhases} />);
+
+    for (const phase of ["stance", "load", "rotation"]) {
+      const row = screen.getByTestId(`comparison-row-${phase}`);
+      expect(
+        row.querySelectorAll(".comparison-view__bar-fill"),
+      ).toHaveLength(2);
+    }
+  });
+
+  it("uses a compact mobile layout instead of hiding comparison content", async () => {
+    const css = await readComparisonCss();
+    const mediaIndex = css.indexOf("@media (max-width: 640px)");
+    expect(mediaIndex).toBeGreaterThanOrEqual(0);
+    const mobileBlock = css.slice(mediaIndex);
+    // Narrow screens must not hide any comparison content.
+    expect(css).not.toMatch(/display:\s*none/);
+    // The fixed desktop min-width is relaxed so bars stay visible at 390px.
+    expect(mobileBlock).toContain("min-width: 0");
+    expect(mobileBlock).toContain("overflow-x: visible");
   });
 });

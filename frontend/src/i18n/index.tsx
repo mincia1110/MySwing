@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -133,9 +134,21 @@ const ko = {
     title: "분석 리포트",
     analysisId: "분석 ID: {id}",
     createdAt: "생성일 {date}",
+    multipleSwingsAria: "다중 스윙 감지 안내",
+    multipleSwings:
+      "영상에서 여러 번의 스윙 동작이 감지되어, 가장 먼저 시작된 유의미한 스윙만 분석했습니다.",
+    multipleSwingsWithCount:
+      "영상에서 스윙 동작 후보 {count}개가 감지되어, 가장 먼저 시작된 유의미한 스윙만 분석했습니다.",
     drillsAria: "드릴 추천",
     drillsTitle: "추천 드릴",
     noDrills: "추천 드릴이 없습니다.",
+  },
+  metricLabels: {
+    batSpeed: "배트 속도",
+    attackAngle: "어택 앵글",
+    handPathEfficiency: "핸드 패스 효율",
+    kinematicChain: "키네마틱 체인",
+    hipShoulderSeparation: "힙-숄더 분리",
   },
   overlay: {
     title: "오버레이 비디오",
@@ -186,6 +199,9 @@ const ko = {
       partialPoseClassifier: "부분 포즈 기반 분류기",
       mixedPoseAndObservedBatContact:
         "포즈 기반 구간 + 검출기가 관측한 배트 접촉",
+      mixedPoseClassifierAndPoseMotionContact:
+        "포즈 기반 구간 + 포즈 동작 기반 접촉 추정",
+      poseMotionContactOnly: "포즈 동작 기반 접촉 추정만 사용",
       observedBatContactOnly: "검출기가 관측한 배트 접촉만 사용",
       unavailable: "판정 불가",
       notRecorded: "기록되지 않음 (이전 분석)",
@@ -383,9 +399,21 @@ const en = {
     title: "Analysis Report",
     analysisId: "Analysis ID: {id}",
     createdAt: "Created {date}",
+    multipleSwingsAria: "Multiple swing detection notice",
+    multipleSwings:
+      "Multiple swing motions were detected in this video; only the earliest substantial swing was analyzed.",
+    multipleSwingsWithCount:
+      "{count} swing-motion candidates were detected in this video; only the earliest substantial swing was analyzed.",
     drillsAria: "Drill recommendations",
     drillsTitle: "Recommended Drills",
     noDrills: "No drill recommendations.",
+  },
+  metricLabels: {
+    batSpeed: "Bat Speed",
+    attackAngle: "Attack Angle",
+    handPathEfficiency: "Hand Path Efficiency",
+    kinematicChain: "Kinematic Chain",
+    hipShoulderSeparation: "Hip-Shoulder Separation",
   },
   overlay: {
     title: "Overlay Video",
@@ -436,6 +464,9 @@ const en = {
       partialPoseClassifier: "Partial pose-derived classifier",
       mixedPoseAndObservedBatContact:
         "Pose-derived phases + detector-observed bat contact",
+      mixedPoseClassifierAndPoseMotionContact:
+        "Pose-derived phases + pose-motion contact estimate",
+      poseMotionContactOnly: "Pose-motion contact estimate only",
       observedBatContactOnly: "Detector-observed bat contact only",
       unavailable: "Unavailable",
       notRecorded: "Not recorded (legacy analysis)",
@@ -559,6 +590,12 @@ function interpolate(value: string, params?: TranslationParams): string {
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<Language>(initialLanguage);
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = language;
+    }
+  }, [language]);
 
   const setLanguage = useCallback((next: Language) => {
     setLanguageState(next);

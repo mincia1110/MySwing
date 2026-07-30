@@ -16,6 +16,7 @@ import {
   type TrendDataResponse,
 } from "../types/analysis";
 import { useTranslation } from "../i18n";
+import { useMetricLabel } from "../utils/metricLabels";
 import "./TrendChart.css";
 
 export interface TrendChartProps {
@@ -120,6 +121,7 @@ export function TrendChart({
   title,
 }: TrendChartProps) {
   const { language, t } = useTranslation();
+  const metricLabel = useMetricLabel();
   const [selectedMetric, setSelectedMetric] = useState("all");
   const total = trendData.total_recordings;
   const resolvedTitle = title ?? t("trend.title");
@@ -187,7 +189,7 @@ export function TrendChart({
             <option value="all">{t("trend.allMetrics")}</option>
             {allMetricNames.map((metricName) => (
               <option key={metricName} value={metricName}>
-                {metricName}
+                {metricLabel(metricName)}
               </option>
             ))}
           </select>
@@ -213,7 +215,7 @@ export function TrendChart({
             data-testid={`trend-chart-metric-${metricName}`}
             data-points={points.length}
           >
-            <p className="trend-chart__metric-name">{metricName}</p>
+            <p className="trend-chart__metric-name">{metricLabel(metricName)}</p>
             <p className="trend-chart__meta">
               <span>
                 {t("trend.dateRange", {
@@ -233,7 +235,7 @@ export function TrendChart({
               className="trend-chart__svg"
               viewBox={`0 0 ${geom.width} ${geom.height}`}
               role="img"
-              aria-label={t("trend.chartAria", { metric: metricName })}
+              aria-label={t("trend.chartAria", { metric: metricLabel(metricName) })}
               preserveAspectRatio="none"
             >
               <line

@@ -39,7 +39,22 @@ describe("ImprovementAreasList", () => {
     expect(items[0]).toHaveAttribute("data-rank", "1");
     expect(items[1]).toHaveAttribute("data-rank", "2");
     expect(items[2]).toHaveAttribute("data-rank", "3");
-    expect(items[0]).toHaveTextContent("bat_speed");
+    expect(items[0]).toHaveTextContent("배트 속도");
+  });
+
+  it("localizes known metric names and humanizes unknown ones", () => {
+    render(<ImprovementAreasList improvements={improvements} />);
+    // Known identifiers render localized labels.
+    expect(screen.getByTestId("improvements-item-bat_speed")).toHaveTextContent(
+      "배트 속도",
+    );
+    expect(
+      screen.getByTestId("improvements-item-attack_angle"),
+    ).toHaveTextContent("어택 앵글");
+    // Unknown identifiers degrade to readable text, never raw snake_case.
+    const unknown = screen.getByTestId("improvements-item-hip_rotation");
+    expect(unknown).toHaveTextContent("hip rotation");
+    expect(unknown).not.toHaveTextContent("hip_rotation");
   });
 
   it("shows deviation values per item", () => {

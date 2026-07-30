@@ -76,8 +76,12 @@ pip install -e ".[dev,ml]"
 
 cp .env.example .env
 alembic upgrade head
+python scripts/create_test_user.py
 python scripts/seed_reference_data.py
 ```
+
+`create_test_user.py`는 로컬 `development` 인증 모드에서만 사용하는 고정
+사용자를 멱등하게 생성합니다. 공개 배포에서는 development 인증을 사용하지 마세요.
 
 ### 3. 서비스 실행
 

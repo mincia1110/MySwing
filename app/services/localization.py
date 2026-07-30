@@ -2,7 +2,10 @@
 
 from typing import Literal
 
-from app.schemas.analysis import DrillRecommendationResponse
+from app.schemas.analysis import (
+    DrillRecommendationResponse,
+    UnmeasurableMetricResponse,
+)
 
 Locale = Literal["ko", "en"]
 
@@ -15,7 +18,8 @@ def normalize_locale(locale: str | None) -> Locale:
 _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     "오버로드 배트 티 타격": (
         "Overload Bat Tee Drill",
-        "Use a heavier bat for repeated tee swings to build impact bat speed through overload training.",
+        "Use a heavier bat for repeated tee swings to build impact bat speed "
+        "through overload training.",
     ),
     "로테이션 미디신볼 던지기": (
         "Rotational Medicine Ball Throw",
@@ -27,7 +31,8 @@ _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     ),
     "컨트롤 스윙 드릴": (
         "Controlled Swing Drill",
-        "Prioritize bat control and contact quality instead of maximum speed to stabilize excessive bat speed.",
+        "Prioritize bat control and contact quality instead of maximum speed "
+        "to stabilize excessive bat speed.",
     ),
     "소프트 토스 정확도 드릴": (
         "Soft Toss Accuracy Drill",
@@ -35,11 +40,13 @@ _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     ),
     "로우 티 드릴": (
         "Low Tee Drill",
-        "Set the tee around knee height and practice consistent contact with a positive upward swing path.",
+        "Set the tee around knee height and practice consistent contact with a "
+        "positive upward swing path.",
     ),
     "상향 스윙 패스 드릴": (
         "Upward Swing Path Drill",
-        "Repeat a bat path that rises slightly through the ball to better match the incoming pitch plane.",
+        "Repeat a bat path that rises slightly through the ball to better match "
+        "the incoming pitch plane.",
     ),
     "다단계 티 높이 드릴": (
         "Multi-Height Tee Drill",
@@ -55,7 +62,8 @@ _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     ),
     "하이 티 라인드라이브": (
         "High Tee Line Drive Drill",
-        "Set the tee around chest height and work on line-drive contact instead of lifting the ball.",
+        "Set the tee around chest height and work on line-drive contact instead "
+        "of lifting the ball.",
     ),
     "힙 리드 드릴": (
         "Hip Lead Drill",
@@ -67,7 +75,8 @@ _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     ),
     "타월 드릴": (
         "Towel Connection Drill",
-        "Wrap a towel across the chest to feel whether proper separation is maintained during rotation.",
+        "Wrap a towel across the chest to feel whether proper separation is "
+        "maintained during rotation.",
     ),
     "커넥션 드릴": (
         "Connection Drill",
@@ -75,7 +84,8 @@ _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     ),
     "동기화 회전 드릴": (
         "Synchronized Rotation Drill",
-        "Repeat smooth rotations where the hips and shoulders rotate together without over-separating.",
+        "Repeat smooth rotations where the hips and shoulders rotate together "
+        "without over-separating.",
     ),
     "다이렉트 패스 티 드릴": (
         "Direct Path Tee Drill",
@@ -115,27 +125,33 @@ _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     ),
     "미니밴드 힙 안정화 드릴": (
         "Mini-Band Hip Stability Drill",
-        "Swing with a mini-band around the hips while keeping the core stable to reduce lateral sway.",
+        "Swing with a mini-band around the hips while keeping the core stable "
+        "to reduce lateral sway.",
     ),
     "힙 텐션 릴리즈 드릴": (
         "Hip Tension Release Drill",
-        "Use breathing and rhythm with a slight knee bend to reduce excessive side-to-side movement.",
+        "Use breathing and rhythm with a slight knee bend to reduce excessive "
+        "side-to-side movement.",
     ),
     "스텝 백 풋워크 드릴": (
         "Step-Back Footwork Drill",
-        "Progressively narrow stance and step length to keep the center of gravity from moving too far sideways.",
+        "Progressively narrow stance and step length to keep the center of gravity "
+        "from moving too far sideways.",
     ),
     "뒷다리 드라이브 드릴": (
         "Back-Leg Drive Drill",
-        "Repeat movements that use the back leg and hips to stay loaded and maintain lower-body force.",
+        "Repeat movements that use the back leg and hips to stay loaded and "
+        "maintain lower-body force.",
     ),
     "힙 힌지 리프트 드릴": (
         "Hip Hinge Lift Drill",
-        "Use gradual lowering and rising through a hip hinge to create appropriate vertical movement at impact.",
+        "Use gradual lowering and rising through a hip hinge to create appropriate "
+        "vertical movement at impact.",
     ),
     "코어 안정화 플랭크": (
         "Core Stability Plank",
-        "Use plank and side-plank variations to improve core stability and reduce excessive center-of-gravity drop.",
+        "Use plank and side-plank variations to improve core stability and reduce "
+        "excessive center-of-gravity drop.",
     ),
     "미니 스쿼트 자세 유지 드릴": (
         "Mini Squat Hold Drill",
@@ -147,7 +163,8 @@ _DRILL_TRANSLATIONS_EN: dict[str, tuple[str, str]] = {
     ),
     "체어 로테이션 드릴": (
         "Chair Rotation Drill",
-        "Practice isolated rotation while seated to reduce unnecessary upper-body and head movement.",
+        "Practice isolated rotation while seated to reduce unnecessary upper-body "
+        "and head movement.",
     ),
     "스쿼트 스윙 안정화 드릴": (
         "Squat Swing Stability Drill",
@@ -205,6 +222,39 @@ _METRIC_LABELS_EN = {
     "spine_angle_degrees": "spine angle",
 }
 
+_UNMEASURABLE_REASON_TRANSLATIONS_KO = {
+    "Bat barrel was not observed near impact": "임팩트 부근에서 배트 배럴이 관측되지 않았습니다.",
+    "Validated 3D segment angular velocities are unavailable from monocular projected landmarks": (
+        "단일 카메라의 투영 랜드마크만으로는 검증된 3D 분절 각속도를 계산할 수 없습니다."
+    ),
+    (
+        "Camera angle unsuitable for rotation measurement "
+        "(side view causes left/right keypoint overlap)"
+    ): (
+        "카메라 각도가 회전 측정에 적합하지 않습니다. 사이드뷰에서 좌우 키포인트가 겹쳤습니다."
+    ),
+    "Insufficient joint tracking data": "관절 추적 데이터가 부족합니다.",
+    "Insufficient bat detections": "배트 검출 데이터가 부족합니다.",
+    "Impact frame not detected": "임팩트 프레임을 찾지 못했습니다.",
+    "No bat detection at impact frame": "임팩트 프레임에서 배트를 검출하지 못했습니다.",
+    "No detector-observed impact was available": "검출기로 관측한 임팩트 근거가 없습니다.",
+    "Estimated stride exceeds 90% of body height; likely partial/cropped tracking": (
+        "추정 스트라이드가 신장의 90%를 초과해 부분 검출 또는 크롭 오류 가능성이 있습니다."
+    ),
+    (
+        "Estimated center-of-gravity sway exceeds 35% of body height; "
+        "likely camera/tracking artifact"
+    ): (
+        "추정 무게중심 좌우 이동이 신장의 35%를 초과해 카메라 또는 추적 오류 가능성이 있습니다."
+    ),
+    "Estimated head movement exceeds 20% of body height; likely camera/tracking artifact": (
+        "추정 머리 이동이 신장의 20%를 초과해 카메라 또는 추적 오류 가능성이 있습니다."
+    ),
+    "Hand path efficiency below measurable floor; likely phase/tracking artifact": (
+        "핸드 패스 효율이 측정 가능한 하한보다 낮아 구간 판정 또는 추적 오류 가능성이 있습니다."
+    ),
+}
+
 
 def localize_drill_recommendations(
     recommendations: list[DrillRecommendationResponse],
@@ -227,6 +277,29 @@ def localize_drill_recommendations(
                 target_metric=drill.target_metric,
                 description=description,
                 direction=drill.direction,
+            )
+        )
+    return localized
+
+
+def localize_unmeasurable_metrics(
+    metrics: list[UnmeasurableMetricResponse],
+    locale: Locale,
+) -> list[UnmeasurableMetricResponse]:
+    """Localize stable user-facing explanations without changing metric keys."""
+    if locale == "en":
+        return metrics
+
+    localized: list[UnmeasurableMetricResponse] = []
+    for metric in metrics:
+        reason = _UNMEASURABLE_REASON_TRANSLATIONS_KO.get(metric.reason, metric.reason)
+        if reason == metric.reason and metric.reason.startswith("Pixel calibration failed:"):
+            detail = metric.reason.removeprefix("Pixel calibration failed:").strip()
+            reason = f"픽셀 보정에 실패했습니다: {detail}"
+        localized.append(
+            UnmeasurableMetricResponse(
+                metric_name=metric.metric_name,
+                reason=reason,
             )
         )
     return localized

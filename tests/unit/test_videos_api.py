@@ -132,6 +132,7 @@ class TestGetVideoMetadataInputPolicy:
 
         assert response.status_code == 200
         body = response.json()
+        assert body["file_name"] == "swing.mp4"
         assert body["duration_seconds"] == 8.0
         assert body["input_validation"]["accepted"] is True
         assert body["input_validation"]["severity"] == "warning"
@@ -142,6 +143,8 @@ class TestGetVideoMetadataInputPolicy:
         assert "ON CONFLICT ON CONSTRAINT uq_videos_file_key" in str(
             upsert.compile(dialect=postgresql.dialect())
         )
+        assert mock_extract_metadata.return_value.file_name == "swing.mp4"
+        assert mock_extract_metadata.return_value.file_key.endswith("/swing.mp4")
 
     @patch("app.api.videos.generate_thumbnail_from_s3")
     @patch("app.api.videos.extract_metadata")

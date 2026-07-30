@@ -20,7 +20,7 @@ describe("DrillRecommendationCard", () => {
       "티 타격 - 어퍼 컷",
     );
     expect(screen.getByTestId("drill-card-target")).toHaveTextContent(
-      "attack_angle",
+      "어택 앵글",
     );
     expect(screen.getByTestId("drill-card-description")).toHaveTextContent(
       "티에서 발사각을 5-15도",

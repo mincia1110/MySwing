@@ -1,30 +1,43 @@
-"""Create a test user for local development."""
-from app.db.session import sync_session_factory
-from app.db.models import UserTable
-import uuid
+"""Create the fixed user used by local development authentication."""
 
-def main():
+from uuid import UUID
+
+from app.db.models import UserTable
+from app.db.session import sync_session_factory
+
+DEVELOPMENT_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+def create_development_user() -> bool:
+    """Create the development user idempotently and return whether it was added."""
     session = sync_session_factory()
     try:
-        user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-        existing = session.query(UserTable).filter(UserTable.id == user_id).first()
+        existing = session.query(UserTable).filter(UserTable.id == DEVELOPMENT_USER_ID).first()
         if existing:
             print(f"User already exists: {existing.email}")
-            return
-        
+            return False
+
         user = UserTable(
-            id=user_id,
-            email="test@example.com",
-            name="Test User",
+            id=DEVELOPMENT_USER_ID,
+            email="development@myswing.local",
+            name="Development User",
         )
         session.add(user)
         session.commit()
-        print(f"Created test user: id={user_id}, email=test@example.com")
-    except Exception as e:
+        print(
+            f"Created development user: id={DEVELOPMENT_USER_ID}, email=development@myswing.local"
+        )
+        return True
+    except Exception:
         session.rollback()
-        print(f"Error: {e}")
+        raise
     finally:
         session.close()
+
+
+def main() -> None:
+    create_development_user()
+
 
 if __name__ == "__main__":
     main()

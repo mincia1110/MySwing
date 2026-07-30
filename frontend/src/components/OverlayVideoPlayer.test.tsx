@@ -46,4 +46,34 @@ describe("OverlayVideoPlayer", () => {
 
     expect(video.currentTime).toBeCloseTo(0.2);
   });
+
+  it("renders phase buttons chronologically without mutating the input", async () => {
+    const user = userEvent.setup();
+    const phases = [
+      { phase: "load", start_frame: 13, end_frame: 14, duration_ms: 33 },
+      { phase: "impact", start_frame: 15, end_frame: 15, duration_ms: 33 },
+      { phase: "stance", start_frame: 0, end_frame: 12, duration_ms: 400 },
+    ];
+    render(
+      <OverlayVideoPlayer
+        videoUrl="https://example.com/overlay.mp4"
+        fps={30}
+        phases={phases}
+      />,
+    );
+
+    const buttons = screen
+      .getAllByRole("button")
+      .map((button) => button.textContent);
+    expect(buttons).toEqual(["준비", "로드", "임팩트"]);
+    // Input array order is preserved.
+    expect(phases.map((p) => p.phase)).toEqual(["load", "impact", "stance"]);
+
+    // Click-to-seek still targets each phase's own start frame.
+    const video = screen.getByTestId("overlay-video-element") as HTMLVideoElement;
+    await user.click(screen.getByRole("button", { name: "준비 구간으로 이동" }));
+    expect(video.currentTime).toBeCloseTo(0);
+    await user.click(screen.getByRole("button", { name: "임팩트 구간으로 이동" }));
+    expect(video.currentTime).toBeCloseTo(0.5);
+  });
 });

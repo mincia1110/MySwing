@@ -215,6 +215,11 @@ async def get_video_metadata(
 
         # Extract metadata (OpenCV is sync; offload to thread).
         metadata = await asyncio.to_thread(extract_metadata, tmp_video_path)
+        # Metadata extraction runs against a random temporary filename. Preserve
+        # the sanitized original name encoded in the owner-scoped object key for
+        # persistence and user-facing responses.
+        metadata.file_key = file_key
+        metadata.file_name = video_path.name
 
         # Generate thumbnail and upload to S3 (also sync; offload to thread).
         thumbnail_url = None
@@ -248,7 +253,7 @@ async def get_video_metadata(
 
         input_validation = validate_single_swing_input_policy(metadata.duration_seconds)
         return VideoMetadataWithThumbnailResponse(
-            file_name=metadata.file_name,
+            file_name=video_path.name,
             duration_seconds=metadata.duration_seconds,
             resolution=ResolutionResponse(
                 width=metadata.resolution_width,

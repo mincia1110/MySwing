@@ -76,8 +76,13 @@ pip install -e ".[dev,ml]"
 
 cp .env.example .env
 alembic upgrade head
+python scripts/create_test_user.py
 python scripts/seed_reference_data.py
 ```
+
+`create_test_user.py` idempotently creates the fixed user used only by the
+local `development` authentication mode. Do not use development authentication
+for a public deployment.
 
 ### 3. Run Services
 

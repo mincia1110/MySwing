@@ -6,6 +6,7 @@
  */
 import type { ImprovementAreaResponse } from "../types/analysis";
 import { useTranslation } from "../i18n";
+import { useMetricLabel } from "../utils/metricLabels";
 import "./ImprovementAreasList.css";
 
 export interface ImprovementAreasListProps {
@@ -18,6 +19,7 @@ export function ImprovementAreasList({
   title,
 }: ImprovementAreasListProps) {
   const { t } = useTranslation();
+  const metricLabel = useMetricLabel();
   const sorted = [...improvements].sort((a, b) => a.rank - b.rank);
   const resolvedTitle = title ?? t("improvements.title");
 
@@ -49,7 +51,7 @@ export function ImprovementAreasList({
               </span>
               <span className="improvements__metric">
                 <span className="improvements__metric-name">
-                  {imp.metric_name}
+                  {metricLabel(imp.metric_name)}
                 </span>
                 <span className="improvements__metric-detail">
                   {t("improvements.currentTarget", {

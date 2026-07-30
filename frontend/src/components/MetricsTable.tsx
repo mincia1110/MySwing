@@ -14,6 +14,7 @@ import type {
   MetricEvaluationResponse,
 } from "../types/analysis";
 import { useTranslation } from "../i18n";
+import { useMetricLabel } from "../utils/metricLabels";
 import "./MetricsTable.css";
 
 export interface MetricsTableProps {
@@ -44,6 +45,7 @@ export function MetricsTable({
   title,
 }: MetricsTableProps) {
   const { t } = useTranslation();
+  const metricLabel = useMetricLabel();
   const resolvedTitle = title ?? t("metrics.title");
 
   if (metrics.length === 0) {
@@ -86,7 +88,7 @@ export function MetricsTable({
               data-color={m.color_code}
               data-rating={m.rating}
             >
-              <th scope="row">{m.metric_name}</th>
+              <th scope="row">{metricLabel(m.metric_name)}</th>
               <td>
                 {formatNumber(m.measured_value)} {m.unit}
               </td>

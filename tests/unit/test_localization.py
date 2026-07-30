@@ -1,8 +1,9 @@
 """Tests for API-facing localization helpers."""
 
-from app.schemas.analysis import DrillRecommendationResponse
+from app.schemas.analysis import DrillRecommendationResponse, UnmeasurableMetricResponse
 from app.services.localization import (
     localize_drill_recommendations,
+    localize_unmeasurable_metrics,
     normalize_locale,
 )
 
@@ -57,3 +58,25 @@ def test_localize_drill_recommendations_translates_generic_drill_to_english() ->
 
     assert localized.drill_name == "Custom Training Plan Needed"
     assert "Bat Speed is above the reference range" in localized.description
+
+
+def test_localize_unmeasurable_metrics_translates_known_reason_to_korean() -> None:
+    metric = UnmeasurableMetricResponse(
+        metric_name="bat_speed",
+        reason="Bat barrel was not observed near impact",
+    )
+
+    [localized] = localize_unmeasurable_metrics([metric], "ko")
+
+    assert localized.metric_name == "bat_speed"
+    assert localized.reason == "임팩트 부근에서 배트 배럴이 관측되지 않았습니다."
+
+
+def test_localize_unmeasurable_metrics_preserves_unknown_reason() -> None:
+    metric = UnmeasurableMetricResponse(
+        metric_name="custom_metric",
+        reason="Provider-specific diagnostic",
+    )
+
+    assert localize_unmeasurable_metrics([metric], "ko") == [metric]
+    assert localize_unmeasurable_metrics([metric], "en") == [metric]

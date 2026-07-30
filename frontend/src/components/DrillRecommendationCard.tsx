@@ -3,6 +3,7 @@
  */
 import type { DrillRecommendationResponse } from "../types/analysis";
 import { useTranslation } from "../i18n";
+import { useMetricLabel } from "../utils/metricLabels";
 import "./DrillRecommendationCard.css";
 
 export interface DrillRecommendationCardProps {
@@ -11,6 +12,7 @@ export interface DrillRecommendationCardProps {
 
 export function DrillRecommendationCard({ drill }: DrillRecommendationCardProps) {
   const { t } = useTranslation();
+  const metricLabel = useMetricLabel();
   const directionLabel =
     drill.direction
       ? t(`drill.directions.${drill.direction}`)
@@ -25,7 +27,7 @@ export function DrillRecommendationCard({ drill }: DrillRecommendationCardProps)
         {drill.drill_name}
       </h4>
       <span className="drill-card__target" data-testid="drill-card-target">
-        {t("drill.target", { metric: drill.target_metric })}
+        {t("drill.target", { metric: metricLabel(drill.target_metric) })}
       </span>
       {directionLabel ? (
         <span

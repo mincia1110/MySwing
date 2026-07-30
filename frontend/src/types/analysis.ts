@@ -143,6 +143,21 @@ export interface BiomechanicsResponse {
   processing_time_seconds: number | null;
 }
 
+/**
+ * Multiple-swing isolation provenance nested under
+ * `AnalysisReportResponse.phase_evidence.swing_window`. All fields are
+ * optional because legacy reports may omit them.
+ */
+export interface SwingWindowEvidence {
+  start_frame?: number;
+  end_frame?: number;
+  selected_impact_frame?: number;
+  candidate_count?: number;
+  multiple_swing_detected?: boolean;
+  isolation_applied?: boolean;
+  selection_policy?: string;
+}
+
 export interface AnalysisReportResponse {
   analysis_id: string;
   user_id: string;

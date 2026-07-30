@@ -1,5 +1,6 @@
 import type { BiomechanicsResponse } from "../types/analysis";
 import { useTranslation } from "../i18n";
+import { humanizeMetricName, useMetricLabel } from "../utils/metricLabels";
 import "./BiomechanicsMeasurements.css";
 
 export interface BiomechanicsMeasurementsProps {
@@ -21,6 +22,9 @@ const PHASE_SOURCE_KEYS: Record<string, string> = {
   partial_pose_classifier: "biomechanics.phaseSources.partialPoseClassifier",
   mixed_pose_and_observed_bat_contact:
     "biomechanics.phaseSources.mixedPoseAndObservedBatContact",
+  mixed_pose_classifier_and_pose_motion_contact:
+    "biomechanics.phaseSources.mixedPoseClassifierAndPoseMotionContact",
+  pose_motion_contact_only: "biomechanics.phaseSources.poseMotionContactOnly",
   observed_bat_contact_only:
     "biomechanics.phaseSources.observedBatContactOnly",
   unavailable: "biomechanics.phaseSources.unavailable",
@@ -48,10 +52,6 @@ function formatNumber(value: number, signed = false): string {
   const normalized = Object.is(value, -0) ? 0 : value;
   const formatted = normalized.toFixed(1);
   return signed && normalized > 0 ? `+${formatted}` : formatted;
-}
-
-function humanizeMetricName(metricName: string): string {
-  return metricName.replace(/_/g, " ");
 }
 
 function buildMeasurements(
@@ -139,12 +139,15 @@ export function BiomechanicsMeasurements({
   phaseSource,
 }: BiomechanicsMeasurementsProps) {
   const { t } = useTranslation();
+  const metricLabel = useMetricLabel();
   const measurements = buildMeasurements(biomechanics);
   const unmeasurableMetrics = biomechanics?.unmeasurable_metrics ?? [];
   const phaseSourceKey = phaseSource ? PHASE_SOURCE_KEYS[phaseSource] : null;
   const phaseSourceLabel = phaseSourceKey
     ? t(phaseSourceKey)
-    : phaseSource ?? t("biomechanics.phaseSources.notRecorded");
+    : phaseSource
+      ? humanizeMetricName(phaseSource)
+      : t("biomechanics.phaseSources.notRecorded");
 
   return (
     <section
@@ -215,7 +218,7 @@ export function BiomechanicsMeasurements({
               const labelKey = METRIC_LABEL_KEYS[metric.metric_name];
               const label = labelKey
                 ? t(labelKey)
-                : humanizeMetricName(metric.metric_name);
+                : metricLabel(metric.metric_name);
               return (
                 <li key={`${metric.metric_name}-${index}`}>
                   <strong>{label}</strong>: {metric.reason}

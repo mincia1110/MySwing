@@ -98,5 +98,24 @@
 @media (max-width: 640px) {
   .comparison-view {
     padding: 12px;
+    overflow-x: visible;
+  }
+
+  /* Compact layout so the comparison bars stay visible without scrolling. */
+  .comparison-view__table {
+    min-width: 0;
+    font-size: 12px;
+    table-layout: fixed;
+  }
+
+  .comparison-view__table th,
+  .comparison-view__table td {
+    padding: 4px;
+    overflow-wrap: break-word;
+  }
+
+  .comparison-view__bar-cell {
+    min-width: 0;
+    width: 34%;
   }
 }

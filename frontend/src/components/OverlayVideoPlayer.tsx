@@ -31,6 +31,8 @@ export function OverlayVideoPlayer({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const resolvedTitle = title ?? t("overlay.title");
   const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 30;
+  // Render phase controls chronologically without mutating the input array.
+  const sortedPhases = [...phases].sort((a, b) => a.start_frame - b.start_frame);
   const phaseLabel = (phase: string) => {
     const key = `phases.${phase}`;
     const label = t(key);
@@ -63,13 +65,13 @@ export function OverlayVideoPlayer({
           >
             {t("overlay.unsupported")}
           </video>
-          {phases.length > 0 ? (
+          {sortedPhases.length > 0 ? (
             <div className="overlay-video__phases">
               <span className="overlay-video__phases-label">
                 {t("overlay.phases")}
               </span>
               <div className="overlay-video__phase-list">
-                {phases.map((phase) => (
+                {sortedPhases.map((phase) => (
                   <button
                     key={`${phase.phase}-${phase.start_frame}`}
                     type="button"

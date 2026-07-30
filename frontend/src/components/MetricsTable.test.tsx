@@ -40,13 +40,77 @@ describe("MetricsTable", () => {
   it("renders one row per metric with measured value, range, and deviation", () => {
     render(<MetricsTable metrics={metrics} />);
 
+    const expectedLabels: Record<string, string> = {
+      bat_speed: "배트 속도",
+      attack_angle: "어택 앵글",
+      hand_path_efficiency: "핸드 패스 효율",
+    };
     for (const m of metrics) {
       const row = screen.getByTestId(`metrics-table-row-${m.metric_name}`);
       expect(row).toBeInTheDocument();
       expect(row).toHaveAttribute("data-color", m.color_code);
       expect(row).toHaveAttribute("data-rating", m.rating);
-      expect(within(row).getByText(m.metric_name)).toBeInTheDocument();
+      expect(within(row).getByText(expectedLabels[m.metric_name])).toBeInTheDocument();
     }
+  });
+
+  it("localizes known raw metric identifiers and keeps raw test ids", () => {
+    render(
+      <MetricsTable
+        metrics={[
+          {
+            metric_name: "kinematic_chain",
+            measured_value: 0.8,
+            unit: "",
+            reference_min: 0.7,
+            reference_max: 1.0,
+            deviation_percent: 0,
+            rating: "within_range",
+            color_code: "green",
+          },
+          {
+            metric_name: "hip_shoulder_separation",
+            measured_value: 42,
+            unit: "deg",
+            reference_min: 30,
+            reference_max: 45,
+            deviation_percent: 0,
+            rating: "within_range",
+            color_code: "green",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("metrics-table-row-kinematic_chain"),
+    ).toHaveTextContent("키네마틱 체인");
+    expect(
+      screen.getByTestId("metrics-table-row-hip_shoulder_separation"),
+    ).toHaveTextContent("힙-숄더 분리");
+  });
+
+  it("humanizes unknown metric identifiers instead of showing snake_case", () => {
+    render(
+      <MetricsTable
+        metrics={[
+          {
+            metric_name: "new_future_metric",
+            measured_value: 1,
+            unit: "",
+            reference_min: 0,
+            reference_max: 2,
+            deviation_percent: 0,
+            rating: "within_range",
+            color_code: "green",
+          },
+        ]}
+      />,
+    );
+
+    const row = screen.getByTestId("metrics-table-row-new_future_metric");
+    expect(within(row).getByText("new future metric")).toBeInTheDocument();
+    expect(row).not.toHaveTextContent("new_future_metric");
   });
 
   it("applies the color-coded class to the rating badge", () => {

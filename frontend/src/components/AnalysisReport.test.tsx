@@ -1,10 +1,40 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import type { ReactNode } from "react";
+import { afterEach, describe, expect, it } from "vitest";
+import { I18nProvider } from "../i18n";
 import { AnalysisReport } from "./AnalysisReport";
 import type {
   AnalysisReportResponse,
   TrendDataResponse,
 } from "../types/analysis";
+
+const originalLocalStorage = Object.getOwnPropertyDescriptor(
+  window,
+  "localStorage",
+);
+
+function renderInLanguage(component: ReactNode, language: "ko" | "en") {
+  let storedLanguage = language;
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) =>
+        key === "myswing.language" ? storedLanguage : null,
+      setItem: (key: string, value: string) => {
+        if (key === "myswing.language") storedLanguage = value as "ko" | "en";
+      },
+    },
+  });
+  return render(<I18nProvider>{component}</I18nProvider>);
+}
+
+afterEach(() => {
+  if (originalLocalStorage) {
+    Object.defineProperty(window, "localStorage", originalLocalStorage);
+  } else {
+    Reflect.deleteProperty(window, "localStorage");
+  }
+});
 
 const baseReport: AnalysisReportResponse = {
   analysis_id: "abc-123",
@@ -204,5 +234,116 @@ describe("AnalysisReport", () => {
       "data-state",
       "insufficient",
     );
+  });
+
+  it("shows a localized notice when multiple swings were isolated", () => {
+    render(
+      <AnalysisReport
+        report={{
+          ...baseReport,
+          phase_source: "mixed_pose_classifier_and_pose_motion_contact",
+          phase_evidence: {
+            swing_window: {
+              start_frame: 0,
+              end_frame: 44,
+              selected_impact_frame: 15,
+              candidate_count: 2,
+              multiple_swing_detected: true,
+              isolation_applied: true,
+              selection_policy: "earliest_substantial_swing",
+            },
+          },
+        }}
+      />,
+    );
+
+    const notice = screen.getByTestId("analysis-report-swing-window-notice");
+    expect(notice).toHaveTextContent(
+      "영상에서 스윙 동작 후보 2개가 감지되어",
+    );
+    expect(notice).toHaveTextContent(
+      "가장 먼저 시작된 유의미한 스윙만 분석했습니다",
+    );
+  });
+
+  it("shows the multiple-swing notice in English with the candidate count", () => {
+    renderInLanguage(
+      <AnalysisReport
+        report={{
+          ...baseReport,
+          phase_evidence: {
+            swing_window: {
+              candidate_count: 3,
+              multiple_swing_detected: true,
+              isolation_applied: true,
+            },
+          },
+        }}
+      />,
+      "en",
+    );
+
+    expect(
+      screen.getByTestId("analysis-report-swing-window-notice"),
+    ).toHaveTextContent(
+      "3 swing-motion candidates were detected in this video; only the earliest substantial swing was analyzed.",
+    );
+  });
+
+  it("omits the count when candidate_count is missing or invalid", () => {
+    render(
+      <AnalysisReport
+        report={{
+          ...baseReport,
+          phase_evidence: {
+            swing_window: {
+              multiple_swing_detected: true,
+              isolation_applied: true,
+            },
+          },
+        }}
+      />,
+    );
+
+    const notice = screen.getByTestId("analysis-report-swing-window-notice");
+    expect(notice).toHaveTextContent("여러 번의 스윙 동작이 감지되어");
+    expect(notice).not.toHaveTextContent("후보");
+  });
+
+  it("renders no notice without multiple-swing isolation evidence", () => {
+    render(
+      <AnalysisReport
+        report={{
+          ...baseReport,
+          phase_evidence: {
+            swing_window: {
+              candidate_count: 1,
+              multiple_swing_detected: false,
+              isolation_applied: false,
+            },
+          },
+        }}
+      />,
+    );
+    expect(
+      screen.queryByTestId("analysis-report-swing-window-notice"),
+    ).not.toBeInTheDocument();
+
+    render(<AnalysisReport report={baseReport} />);
+    expect(
+      screen.queryByTestId("analysis-report-swing-window-notice"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("formats the creation date with the selected UI locale", () => {
+    renderInLanguage(<AnalysisReport report={baseReport} />, "en");
+    expect(screen.getByTestId("analysis-report")).toHaveTextContent(
+      "1/15/2025",
+    );
+
+    renderInLanguage(<AnalysisReport report={baseReport} />, "ko");
+    const meta = document.querySelectorAll(".analysis-report__meta")[1];
+    expect(meta).toHaveTextContent("2025.");
+    expect(meta.textContent).toMatch(/오전|오후/);
   });
 });

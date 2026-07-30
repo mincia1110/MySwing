@@ -942,7 +942,7 @@ class TestGetAnalysisReport:
 
         try:
             response = client.get(
-                f"/api/v1/analyses/{mock_completed_analysis.id}/report",
+                f"/api/v1/analyses/{mock_completed_analysis.id}/report?locale=en",
                 headers=_user_headers(mock_completed_analysis.user_id),
             )
             assert response.status_code == 200
@@ -1012,7 +1012,7 @@ class TestGetAnalysisReport:
 
         try:
             response = client.get(
-                f"/api/v1/analyses/{mock_completed_analysis.id}/report",
+                f"/api/v1/analyses/{mock_completed_analysis.id}/report?locale=en",
                 headers=_user_headers(mock_completed_analysis.user_id),
             )
 
