@@ -17,6 +17,17 @@ export const METRIC_LABEL_KEYS: Record<string, string> = {
   hip_shoulder_separation: "metricLabels.hipShoulderSeparation",
 };
 
+const DIRECT_METRIC_LABELS: Record<"ko" | "en", Record<string, string>> = {
+  ko: {
+    all: "전체 메트릭",
+    impact_anchor: "임팩트 기준점",
+  },
+  en: {
+    all: "All Metrics",
+    impact_anchor: "Impact Anchor",
+  },
+} as const;
+
 /** Turn an unknown snake_case identifier into readable text. */
 export function humanizeMetricName(metricName: string): string {
   return metricName.replace(/_/g, " ").trim();
@@ -27,12 +38,15 @@ export function humanizeMetricName(metricName: string): string {
  * falling back to humanized text for unknown identifiers.
  */
 export function useMetricLabel(): (metricName: string) => string {
-  const { t } = useTranslation();
+  const { language, t } = useTranslation();
   return useCallback(
     (metricName: string) => {
+      const directLabel = DIRECT_METRIC_LABELS[language][metricName];
+      if (directLabel) return directLabel;
+
       const key = METRIC_LABEL_KEYS[metricName];
       return key ? t(key) : humanizeMetricName(metricName);
     },
-    [t],
+    [language, t],
   );
 }
