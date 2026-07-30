@@ -16,13 +16,9 @@ async function readComparisonCss(): Promise<string> {
   };
   // @ts-expect-error - node:url type declarations are not installed
   const { fileURLToPath } = (await import("node:url")) as {
-    fileURLToPath: (url: string) => string;
+    fileURLToPath: (url: URL) => string;
   };
-  const testFilePath = fileURLToPath(import.meta.url);
-  const cssPath = `${testFilePath.slice(
-    0,
-    testFilePath.lastIndexOf("/"),
-  )}/ComparisonView.css`;
+  const cssPath = fileURLToPath(new URL("./ComparisonView.css", import.meta.url));
   return readFileSync(cssPath, "utf8");
 }
 
