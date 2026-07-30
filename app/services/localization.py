@@ -238,6 +238,10 @@ _UNMEASURABLE_REASON_TRANSLATIONS_KO = {
     "Impact frame not detected": "임팩트 프레임을 찾지 못했습니다.",
     "No bat detection at impact frame": "임팩트 프레임에서 배트를 검출하지 못했습니다.",
     "No detector-observed impact was available": "검출기로 관측한 임팩트 근거가 없습니다.",
+    "No pose data available": "사용 가능한 포즈 데이터가 없습니다.",
+    "No detector-observed bat evidence or explicit impact phase was available": (
+        "검출기로 관측한 배트 근거나 명시적인 임팩트 구간을 사용할 수 없습니다."
+    ),
     "Estimated stride exceeds 90% of body height; likely partial/cropped tracking": (
         "추정 스트라이드가 신장의 90%를 초과해 부분 검출 또는 크롭 오류 가능성이 있습니다."
     ),
