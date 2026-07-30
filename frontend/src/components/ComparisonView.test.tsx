@@ -14,11 +14,17 @@ async function readComparisonCss(): Promise<string> {
   const { readFileSync } = (await import("node:fs")) as {
     readFileSync: (path: string, encoding: string) => string;
   };
+  // @ts-expect-error - node:path type declarations are not installed
+  const { dirname, join } = (await import("node:path")) as {
+    dirname: (path: string) => string;
+    join: (...paths: string[]) => string;
+  };
   // @ts-expect-error - node:url type declarations are not installed
   const { fileURLToPath } = (await import("node:url")) as {
-    fileURLToPath: (url: URL) => string;
+    fileURLToPath: (url: string | URL) => string;
   };
-  const cssPath = fileURLToPath(new URL("./ComparisonView.css", import.meta.url));
+  const testFilePath = fileURLToPath(import.meta.url);
+  const cssPath = join(dirname(testFilePath), "ComparisonView.css");
   return readFileSync(cssPath, "utf8");
 }
 
