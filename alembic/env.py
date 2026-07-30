@@ -20,14 +20,20 @@ target_metadata = Base.metadata
 
 
 def _migration_url() -> str:
-    """Use the same configured database as the application and worker."""
-    if settings.database_url.startswith("postgresql+asyncpg://"):
-        return settings.database_url.replace(
+    """Resolve an explicit Alembic URL before falling back to application settings."""
+    configured_url = config.get_main_option("sqlalchemy.url")
+    effective_url = (
+        configured_url.strip()
+        if configured_url is not None and configured_url.strip()
+        else settings.database_url
+    )
+    if effective_url.startswith("postgresql+asyncpg://"):
+        return effective_url.replace(
             "postgresql+asyncpg://",
             "postgresql://",
             1,
         )
-    return settings.database_url
+    return effective_url
 
 
 def run_migrations_offline() -> None:
